@@ -24,13 +24,10 @@ const persisted = loadPersisted();
 setMuted(!persisted.settings.sound);
 
 let aiTimer: ReturnType<typeof setTimeout> | null = null;
-let nextHandTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearTimers(): void {
   if (aiTimer) clearTimeout(aiTimer);
-  if (nextHandTimer) clearTimeout(nextHandTimer);
   aiTimer = null;
-  nextHandTimer = null;
 }
 
 const HERO_NAMES = ['你 (Hero)'];
@@ -392,15 +389,11 @@ function finalize(set: SetFn, get: GetFn): void {
   }
 
   const history = [...state.history, entry];
+  // Stop on the final board so the player can review the hand. The next hand is
+  // started only when the player explicitly clicks "下一手".
   set({ seats, stats, heroProfile, opponentStats, history, handOver: true, thinkingId: null, lastResultText: resultText });
 
   persistNow({ ...get(), stats, heroProfile, history } as GameStore);
-
-  // Auto-advance to the next hand after a short pause.
-  const delay = state.settings.fastMode ? 1200 : 2600;
-  nextHandTimer = setTimeout(() => {
-    get().startNextHand();
-  }, delay);
 }
 
 function buildResultText(game: GameState, heroId: number, heroDelta: number): string {
