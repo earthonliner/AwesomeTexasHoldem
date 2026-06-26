@@ -232,7 +232,8 @@ export function applyAction(state: GameState, action: PlayerAction): GameState {
         }
       }
       next.currentBet = Math.max(next.currentBet, target);
-      p.lastAction = p.allIn ? 'allin' : action.type === 'bet' ? 'bet' : 'raise';
+      // An action with nothing to call is an opening bet; otherwise a raise.
+      p.lastAction = p.allIn ? 'allin' : toCall <= 0 ? 'bet' : 'raise';
       record.amount = target;
       break;
     }

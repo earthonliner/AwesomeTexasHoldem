@@ -20,7 +20,8 @@ function statusBadge(player: PlayerState): { text: string; cls: string } | null 
   if (player.allIn) return { text: '全下', cls: 'bg-rose-600' };
   if (player.lastAction === 'check') return { text: '过牌', cls: 'bg-sky-700' };
   if (player.lastAction === 'call') return { text: '跟注', cls: 'bg-emerald-700' };
-  if (player.lastAction === 'raise' || player.lastAction === 'bet') return { text: '加注', cls: 'bg-amber-600' };
+  if (player.lastAction === 'bet') return { text: '下注', cls: 'bg-amber-600' };
+  if (player.lastAction === 'raise') return { text: '加注', cls: 'bg-amber-600' };
   return null;
 }
 
