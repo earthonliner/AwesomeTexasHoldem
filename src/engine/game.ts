@@ -1,4 +1,4 @@
-import type { Card, Street, PlayerAction } from './types';
+import type { Street, PlayerAction } from './types';
 import { makeDeck, shuffle, type Rng, defaultRng } from './deck';
 import { buildPots, distributePots, type PotContribution, type PlayerHand } from './sidePots';
 import { evaluateHand } from './handEvaluator';

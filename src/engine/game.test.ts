@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { startHand, applyAction, getLegalActions, totalPot } from './game';
-import type { GameConfig, SeatInit } from './gameTypes';
+import { startHand, applyAction, getLegalActions, totalPot, type SeatInit } from './game';
+import type { GameConfig } from './gameTypes';
 import { BB_CHIPS } from './gameTypes';
 
 function seeded(seed: number): () => number {
@@ -23,10 +23,6 @@ function makeSeats(n: number, stack = 200): SeatInit[] {
     isHero: i === 0,
     stack,
   }));
-}
-
-function totalChips(stacks: number[], pot: number): number {
-  return stacks.reduce((a, b) => a + b, 0) + pot;
 }
 
 describe('startHand', () => {
