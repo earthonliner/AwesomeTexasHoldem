@@ -6,6 +6,7 @@ import { MathPanel } from './ui/MathPanel';
 import { StatsPanel } from './ui/StatsPanel';
 import { HistoryPanel } from './ui/HistoryPanel';
 import { SettingsPanel } from './ui/SettingsPanel';
+import { HandReviewPanel } from './ui/HandReviewPanel';
 
 export default function App() {
   const game = useGameStore((s) => s.game);
@@ -74,6 +75,7 @@ function GameView() {
   const hero = game.players.find((p) => p.isHero)!;
   const isHeroTurn = game.toAct === game.players.findIndex((p) => p.isHero) && game.status === 'betting';
   const heroBusted = hero.stack <= 0 && game.status === 'complete';
+  const lastHand = handOver && history.length > 0 ? history[history.length - 1] : null;
 
   return (
     <div className="mx-auto flex min-h-full max-w-7xl flex-col px-3 py-3">
@@ -147,7 +149,15 @@ function GameView() {
               <SettingsPanel settings={settings} onChange={updateSettings} showTableNote />
             </div>
           )}
-          {settings.mathEnabled && <MathPanel analysis={analysis} isHeroTurn={isHeroTurn} />}
+          {lastHand && (
+            <HandReviewPanel
+              decisions={lastHand.decisions}
+              resultText={lastResultText}
+              heroDelta={lastHand.heroDelta}
+              onNext={startNextHand}
+            />
+          )}
+          {settings.mathEnabled && !handOver && <MathPanel analysis={analysis} isHeroTurn={isHeroTurn} />}
           <StatsPanel stats={stats} onReset={resetStats} />
           <HistoryPanel history={history} />
         </aside>
