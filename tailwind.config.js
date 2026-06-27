@@ -9,12 +9,12 @@ export default {
           dark: '#0a3d26',
           light: '#157347',
         },
-        // Colorblind-friendly four-color suit palette.
+        // Traditional two-color suit palette: spades & clubs black, hearts & diamonds red.
         suit: {
           spade: '#1f2937',
           heart: '#dc2626',
-          diamond: '#2563eb',
-          club: '#16a34a',
+          diamond: '#dc2626',
+          club: '#1f2937',
         },
       },
       fontFamily: {
