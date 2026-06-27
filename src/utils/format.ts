@@ -23,6 +23,13 @@ export function formatPercent(p: number, digits = 1): string {
   return `${(p * 100).toFixed(digits)}%`;
 }
 
+/** Big-blind value as a bare number string (no unit), for inline formulas. */
+export function bbNum(chips: number, digits = 1): string {
+  const bb = chipsToBB(chips);
+  const rounded = Math.round(bb * 10 ** digits) / 10 ** digits;
+  return Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(digits);
+}
+
 export function formatSigned(chips: number): string {
   const bb = Math.round(chipsToBB(chips) * 10) / 10;
   const sign = bb > 0 ? '+' : '';

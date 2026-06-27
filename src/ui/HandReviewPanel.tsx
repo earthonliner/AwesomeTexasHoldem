@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import type { DecisionSnapshot } from '../store/types';
 import { reviewDecision, VERDICT_META, type Verdict } from '../utils/review';
-import { formatBB, formatSigned, formatPercent } from '../utils/format';
+import { formatBB, formatSigned, formatPercent, bbNum } from '../utils/format';
 import { PlayingCard } from './PlayingCard';
 
 const STREET_LABEL: Record<string, string> = {
@@ -73,48 +74,105 @@ export function HandReviewPanel({
       {decisions.length === 0 ? (
         <p className="text-xs text-slate-500">本手你没有需要决策的行动（如被自动盖牌或直接获胜）。</p>
       ) : (
-        <div className="max-h-[26rem] space-y-2 overflow-y-auto pr-1">
-          {reviews.map(({ d, r }, i) => {
-            const meta = VERDICT_META[r.verdict];
-            return (
-              <div key={i} className="rounded-lg bg-slate-800/60 p-2 text-xs">
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="flex items-center gap-2 text-slate-300">
-                    <span className={`inline-block h-2 w-2 rounded-full ${meta.dot}`} />
-                    <span className="font-semibold">{STREET_LABEL[d.street]}</span>
-                    <span className="text-slate-500">底池 {formatBB(d.potBefore)}</span>
-                    {d.toCall > 0 && <span className="text-amber-400">需跟 {formatBB(d.toCall)}</span>}
-                  </span>
-                  <span className={`font-semibold ${meta.cls}`}>{meta.label}</span>
-                </div>
+        <div className="max-h-[30rem] space-y-2 overflow-y-auto pr-1">
+          {reviews.map(({ d, r }, i) => (
+            <DecisionCard key={i} d={d} r={r} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
-                {d.board.length > 0 && (
-                  <div className="mb-1 flex gap-1">
-                    {d.board.map((c, j) => (
-                      <PlayingCard key={j} card={c} size="sm" />
-                    ))}
-                  </div>
-                )}
+function DecisionCard({ d, r }: { d: DecisionSnapshot; r: ReturnType<typeof reviewDecision> }) {
+  const [showFormula, setShowFormula] = useState(false);
+  const meta = VERDICT_META[r.verdict];
+  const facingBet = d.toCall > 0;
+  // Backward-compat for older saved hands without the new fields.
+  const potOdds = d.potOdds ?? (facingBet ? d.toCall / (d.potBefore + d.toCall) : 0);
+  const win = d.win ?? d.equity;
+  const tie = d.tie ?? 0;
+  const rangePct = d.rangeFraction ? Math.round(d.rangeFraction * 100) : null;
 
-                <div className="mb-1 flex items-center gap-3 text-slate-400">
-                  <span>
-                    胜率 <span className="font-mono text-amber-300">{formatPercent(d.equity)}</span>
-                  </span>
-                  <span>
-                    你的选择 <span className="text-slate-200">{ACTION_LABEL[d.chosen] ?? d.chosen}</span>
-                  </span>
-                </div>
+  return (
+    <div className="rounded-lg bg-slate-800/60 p-2 text-xs">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="flex items-center gap-2 text-slate-300">
+          <span className={`inline-block h-2 w-2 rounded-full ${meta.dot}`} />
+          <span className="font-semibold">{STREET_LABEL[d.street]}</span>
+          <span className="text-slate-500">底池 {formatBB(d.potBefore)}</span>
+          {facingBet && <span className="text-amber-400">需跟 {formatBB(d.toCall)}</span>}
+        </span>
+        <span className={`font-semibold ${meta.cls}`}>{meta.label}</span>
+      </div>
 
-                <div className="mb-1 grid grid-cols-3 gap-1">
-                  <EvCell label="弃牌" ev={d.evFold} best={r.bestAction === 'fold'} />
-                  <EvCell label="跟注" ev={d.evCall} best={r.bestAction === 'call'} />
-                  <EvCell label="加注≈" ev={d.evRaiseHint} best={r.bestAction === 'raise'} />
-                </div>
+      {d.board.length > 0 && (
+        <div className="mb-1 flex gap-1">
+          {d.board.map((c, j) => (
+            <PlayingCard key={j} card={c} size="sm" />
+          ))}
+        </div>
+      )}
 
-                <p className="text-slate-400">{r.comment}</p>
+      <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-400">
+        <span>
+          胜率 <span className="font-mono text-amber-300">{formatPercent(d.equity)}</span>
+        </span>
+        {facingBet && (
+          <span>
+            底池赔率 <span className="font-mono text-sky-300">{formatPercent(potOdds)}</span>
+          </span>
+        )}
+        <span>
+          你的选择 <span className="text-slate-200">{ACTION_LABEL[d.chosen] ?? d.chosen}</span>
+        </span>
+      </div>
+
+      <div className="mb-1 grid grid-cols-3 gap-1">
+        <EvCell label="弃牌" ev={d.evFold} best={r.bestAction === 'fold'} />
+        <EvCell label="跟注" ev={d.evCall} best={r.bestAction === 'call'} />
+        <EvCell label="加注≈" ev={d.evRaiseHint} best={r.bestAction === 'raise'} />
+      </div>
+
+      <p className="mb-1 text-slate-400">{r.comment}</p>
+
+      <button onClick={() => setShowFormula((v) => !v)} className="text-[11px] text-sky-400 hover:underline">
+        {showFormula ? '收起公式 ▲' : '查看计算公式 ▼'}
+      </button>
+
+      {showFormula && (
+        <div className="mt-1 space-y-1 rounded bg-black/30 p-2 font-mono text-[11px] leading-relaxed text-slate-300">
+          <div className="font-sans text-slate-400">胜率（蒙特卡洛模拟）：</div>
+          <div>
+            模拟 {d.iterations ?? '—'} 局，对手按
+            {rangePct !== null ? `「当前牌面前 ${rangePct}% 强手牌」` : '估计范围'}
+            取样{d.liveOpponents ? ` × ${d.liveOpponents} 名对手` : ''}。
+          </div>
+          <div>
+            胜率 = 胜局 / 总局 = {formatPercent(win)}
+            {tie > 0 ? `（平局 ${formatPercent(tie)}，按分摊计入）` : ''}
+          </div>
+          <div>综合权益 = (胜局 + 平局/平分人数) / 总局 = {formatPercent(d.equity)}</div>
+
+          {facingBet && (
+            <>
+              <div className="pt-1 font-sans text-slate-400">底池赔率：</div>
+              <div>
+                底池赔率 = 跟注 ÷ (底池 + 跟注) = {bbNum(d.toCall)} ÷ ({bbNum(d.potBefore)} + {bbNum(d.toCall)}) ={' '}
+                {formatPercent(potOdds)}
               </div>
-            );
-          })}
+              <div className={d.equity >= potOdds ? 'text-emerald-300' : 'text-rose-300'}>
+                跟注所需最低胜率 = 底池赔率 = {formatPercent(potOdds)}；你的权益 {formatPercent(d.equity)}{' '}
+                {d.equity >= potOdds ? '≥ 所需 → 跟注 +EV' : '< 所需 → 跟注 -EV'}
+              </div>
+              <div className="font-sans text-slate-500">
+                跟注 EV = 权益 × (底池 + 跟注) − (1 − 权益) × 跟注 = {formatSigned(d.evCall)}
+              </div>
+            </>
+          )}
+          {!facingBet && (
+            <div className="font-sans text-slate-500">无人下注，可免费过牌看牌（无需支付底池赔率）。</div>
+          )}
         </div>
       )}
     </div>
