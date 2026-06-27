@@ -170,6 +170,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
     // Snapshot the hero's decision point for the post-hand review.
     const analysis = state.analysis ?? computeHeroAnalysis(game, 800);
     if (analysis) {
+      const heroPlayer = game.players[hi];
+      const heroStack = heroPlayer.stack;
+      // Chips this specific action risks (for commitment / risk-of-ruin review).
+      let committed = 0;
+      if (action.type === 'call') committed = Math.min(analysis.callAmount, heroStack);
+      else if (action.type === 'raise' || action.type === 'allin')
+        committed = Math.min(heroStack, Math.max(0, action.amount - heroPlayer.streetCommitted));
+
       const snap: DecisionSnapshot = {
         street: game.street,
         board: [...game.board],
@@ -187,6 +195,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
         evRaiseHint: analysis.raiseEVHint,
         chosen: action.type,
         chosenAmount: action.amount,
+        heroStack,
+        committed,
       };
       set({ liveDecisions: [...state.liveDecisions, snap] });
     }

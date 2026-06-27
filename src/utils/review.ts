@@ -14,6 +14,15 @@ export interface DecisionReview {
   gapBB: number;
   verdict: Verdict;
   comment: string;
+  /** Fraction (0..1) of the hero's stack committed by this action. */
+  commitRatio: number;
+  /**
+   * Risk warning for high-variance, thin-edge commitments. EV alone is not
+   * enough when you risk most of your stack on a small edge — a couple of
+   * losses can be hard to recover from (risk of ruin / Kelly). Null when no
+   * notable risk concern applies.
+   */
+  riskNote: string | null;
 }
 
 const RAISE_KINDS = new Set(['raise', 'bet', 'allin']);
@@ -45,6 +54,10 @@ export function reviewDecision(d: DecisionSnapshot): DecisionReview {
   else if (gapBB <= 2) verdict = 'ok';
   else verdict = 'bad';
 
+  const heroStack = d.heroStack ?? 0;
+  const committed = d.committed ?? 0;
+  const commitRatio = heroStack > 0 ? Math.min(1, committed / heroStack) : 0;
+
   return {
     chosenEV,
     bestEV: best.ev,
@@ -52,7 +65,31 @@ export function reviewDecision(d: DecisionSnapshot): DecisionReview {
     gapBB,
     verdict,
     comment: buildComment(d, best.action, verdict),
+    commitRatio,
+    riskNote: buildRiskNote(d, commitRatio),
   };
+}
+
+/**
+ * Flag high-variance commitments. A call/raise/all-in is "thin" when win equity
+ * only narrowly beats the break-even point; committing a large slice of stack on
+ * such an edge is +EV yet dangerous for bankroll survival.
+ */
+function buildRiskNote(d: DecisionSnapshot, commitRatio: number): string | null {
+  const aggressive = d.chosen === 'call' || d.chosen === 'raise' || d.chosen === 'allin';
+  if (!aggressive || commitRatio < 0.4) return null;
+
+  const breakeven = d.toCall > 0 ? d.potOdds : 1 / (d.liveOpponents + 1);
+  const edge = d.equity - breakeven;
+  const pct = Math.round(commitRatio * 100);
+
+  if (edge >= 0 && edge < 0.1) {
+    return `本次投入约 ${pct}% 的筹码，但胜率仅略高于盈亏平衡点（薄边）。这类决策虽是 +EV，方差却很大——连续一两次失利就可能难以翻身。结合资金管理与风险破产，薄边时应考虑缩小尺度或放弃。`;
+  }
+  if (commitRatio >= 0.7 && d.equity < 0.6) {
+    return `本次押上约 ${pct}% 的筹码，而胜率并不占绝对优势（${(d.equity * 100).toFixed(0)}%）。为大半筹码冒险前，请确认优势足够大、或你的资金足以承受这次波动。`;
+  }
+  return null;
 }
 
 function buildComment(d: DecisionSnapshot, bestAction: string, verdict: Verdict): string {
