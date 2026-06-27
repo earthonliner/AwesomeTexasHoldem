@@ -15,6 +15,13 @@ describe('App smoke', () => {
     expect(screen.getByText('开始游戏')).toBeTruthy();
   });
 
+  it('opens the teaching docs from the start screen', () => {
+    render(<App />);
+    fireEvent.click(screen.getByText('📖 新手教学 / 规则文档'));
+    expect(screen.getByText('📖 德州扑克教学文档')).toBeTruthy();
+    expect(screen.getAllByText('一、基本规则').length).toBeGreaterThan(0);
+  });
+
   it('starts a table and renders the felt + action area', () => {
     vi.useFakeTimers();
     render(<App />);

@@ -7,15 +7,26 @@ import { StatsPanel } from './ui/StatsPanel';
 import { HistoryPanel } from './ui/HistoryPanel';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { HandReviewPanel } from './ui/HandReviewPanel';
+import { DocsModal } from './ui/DocsModal';
 
 export default function App() {
   const game = useGameStore((s) => s.game);
   const started = game !== null;
+  const [showDocs, setShowDocs] = useState(false);
 
-  return started ? <GameView /> : <StartScreen />;
+  return (
+    <>
+      {started ? (
+        <GameView onOpenDocs={() => setShowDocs(true)} />
+      ) : (
+        <StartScreen onOpenDocs={() => setShowDocs(true)} />
+      )}
+      {showDocs && <DocsModal onClose={() => setShowDocs(false)} />}
+    </>
+  );
 }
 
-function StartScreen() {
+function StartScreen({ onOpenDocs }: { onOpenDocs: () => void }) {
   const settings = useGameStore((s) => s.settings);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const newTable = useGameStore((s) => s.newTable);
@@ -38,6 +49,12 @@ function StartScreen() {
         >
           开始游戏
         </button>
+        <button
+          onClick={onOpenDocs}
+          className="mt-3 w-full rounded-xl border border-slate-600 bg-slate-800 py-2.5 text-base font-semibold text-slate-200 transition hover:bg-slate-700 active:scale-95"
+        >
+          📖 新手教学 / 规则文档
+        </button>
         {stats.handsPlayed > 0 && (
           <p className="mt-3 text-center text-xs text-slate-500">
             历史：已玩 {stats.handsPlayed} 手，累计盈亏 {(stats.netChips / 2).toFixed(1)} BB（已保存）
@@ -50,7 +67,7 @@ function StartScreen() {
   );
 }
 
-function GameView() {
+function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
   const {
     game,
     settings,
@@ -88,6 +105,13 @@ function GameView() {
         </span>
         <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">第 {game.handNumber} 手</span>
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={onOpenDocs}
+            className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
+            title="教学文档"
+          >
+            📖 文档
+          </button>
           <button
             onClick={() => updateSettings({ sound: !settings.sound })}
             className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
