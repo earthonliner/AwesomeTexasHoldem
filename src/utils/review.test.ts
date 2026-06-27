@@ -20,6 +20,8 @@ function snap(partial: Partial<DecisionSnapshot>): DecisionSnapshot {
     evRaiseHint: 0,
     chosen: 'call',
     chosenAmount: 0,
+    heroStack: 200,
+    committed: 4,
     ...partial,
   };
 }
@@ -54,5 +56,37 @@ describe('reviewDecision', () => {
     const r = reviewDecision(snap({ chosen: 'call', evCall: 3, evRaiseHint: 9, evFold: 0 }));
     expect(r.gapBB).toBeGreaterThanOrEqual(0);
     expect(r.bestAction).toBe('raise');
+  });
+
+  it('warns about thin-edge large commitments', () => {
+    const r = reviewDecision(
+      snap({
+        chosen: 'allin',
+        equity: 0.36,
+        potOdds: 0.33, // edge only ~3%
+        toCall: 150,
+        potBefore: 300,
+        heroStack: 200,
+        committed: 150, // 75% of stack
+        evCall: 5,
+      }),
+    );
+    expect(r.commitRatio).toBeCloseTo(0.75, 2);
+    expect(r.riskNote).not.toBeNull();
+    expect(r.riskNote).toContain('薄边');
+  });
+
+  it('does not warn for small commitments even on thin edges', () => {
+    const r = reviewDecision(
+      snap({ chosen: 'call', equity: 0.36, potOdds: 0.33, toCall: 4, heroStack: 200, committed: 4 }),
+    );
+    expect(r.riskNote).toBeNull();
+  });
+
+  it('does not warn when committing big with a strong edge', () => {
+    const r = reviewDecision(
+      snap({ chosen: 'allin', equity: 0.85, potOdds: 0.4, toCall: 150, heroStack: 200, committed: 150 }),
+    );
+    expect(r.riskNote).toBeNull();
   });
 });

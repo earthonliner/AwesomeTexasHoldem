@@ -136,6 +136,21 @@ function DecisionCard({ d, r }: { d: DecisionSnapshot; r: ReturnType<typeof revi
 
       <p className="mb-1 text-slate-400">{r.comment}</p>
 
+      {r.commitRatio > 0 && (
+        <div className="mb-1 text-slate-500">
+          本次投入占筹码{' '}
+          <span className={`font-mono ${r.commitRatio >= 0.5 ? 'text-amber-300' : 'text-slate-300'}`}>
+            {Math.round(r.commitRatio * 100)}%
+          </span>
+        </div>
+      )}
+
+      {r.riskNote && (
+        <div className="mb-1 rounded border-l-4 border-rose-500 bg-rose-900/20 px-2 py-1.5 text-[11px] leading-relaxed text-rose-100">
+          ⚠️ 风险提示：{r.riskNote}
+        </div>
+      )}
+
       <button onClick={() => setShowFormula((v) => !v)} className="text-[11px] text-sky-400 hover:underline">
         {showFormula ? '收起公式 ▲' : '查看计算公式 ▼'}
       </button>

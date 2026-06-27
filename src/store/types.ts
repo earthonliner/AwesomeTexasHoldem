@@ -59,6 +59,10 @@ export interface DecisionSnapshot {
   evRaiseHint: number;
   chosen: string;
   chosenAmount: number;
+  /** Hero's remaining stack (chips) before taking this action. */
+  heroStack: number;
+  /** Chips actually committed by this action (for risk / commitment analysis). */
+  committed: number;
 }
 
 export interface HandHistoryEntry {
