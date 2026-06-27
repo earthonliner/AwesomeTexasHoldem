@@ -7,12 +7,12 @@ const RANK_LABEL: Record<number, string> = {
 
 const SUIT_GLYPH: Record<Suit, string> = { s: '\u2660', h: '\u2665', d: '\u2666', c: '\u2663' };
 
-// Colorblind-friendly four-color deck: spades black, hearts red, diamonds blue, clubs green.
+// Traditional two-color deck: spades & clubs black, hearts & diamonds red.
 const SUIT_COLOR: Record<Suit, string> = {
   s: 'text-slate-900',
   h: 'text-red-600',
-  d: 'text-blue-600',
-  c: 'text-green-600',
+  d: 'text-red-600',
+  c: 'text-slate-900',
 };
 
 const SIZES = {
