@@ -48,6 +48,12 @@ export interface DecisionSnapshot {
   potBefore: number;
   toCall: number;
   equity: number;
+  win: number;
+  tie: number;
+  potOdds: number;
+  rangeFraction: number;
+  iterations: number;
+  liveOpponents: number;
   evCall: number;
   evFold: number;
   evRaiseHint: number;

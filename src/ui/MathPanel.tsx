@@ -30,7 +30,11 @@ export function MathPanel({ analysis, isHeroTurn }: Props) {
             <p className="text-slate-500">轮到你行动时显示实时数据。</p>
           ) : (
             <>
-              <Row label="实时胜率 (vs 随机范围)" value={formatPercent(analysis.equity)} highlight />
+              <Row
+                label={`实时胜率 (vs 估计范围·前${Math.round(analysis.rangeFraction * 100)}%)`}
+                value={formatPercent(analysis.equity)}
+                highlight
+              />
               <div className="h-2 overflow-hidden rounded-full bg-slate-700">
                 <div className="h-full bg-gradient-to-r from-emerald-500 to-amber-400" style={{ width: `${analysis.equity * 100}%` }} />
               </div>

@@ -1,6 +1,6 @@
 import type { GameState } from '../engine/gameTypes';
 import type { Card } from '../engine/types';
-import { estimateEquity } from '../engine/monteCarlo';
+import { estimateEquityVsRange, estimateRangeFraction } from '../engine/monteCarlo';
 import { countOuts, hitProbability, potOdds, callEV, evaluateHand, CATEGORY_LABEL } from '../engine';
 import { getLegalActions, totalPot } from '../engine/game';
 
@@ -18,6 +18,10 @@ export interface HeroAnalysis {
   raiseEVHint: number;
   madeHand: string | null;
   potBefore: number;
+  /** Assumed opponent range tightness (fraction of strongest hands). */
+  rangeFraction: number;
+  iterations: number;
+  liveOpponents: number;
 }
 
 /** Find the hero's seat index. */
@@ -37,12 +41,26 @@ export function computeHeroAnalysis(state: GameState, iterations = 1200): HeroAn
 
   const liveOpponents = state.players.filter((p) => !p.folded && !p.sittingOut && !p.isHero).length;
   const board = state.board;
-  const eq = estimateEquity({
+
+  const legal = state.toAct === hi ? getLegalActions(state, hi) : null;
+  const callAmount = legal?.callAmount ?? 0;
+  const potBefore = totalPot(state);
+
+  // Model opponents as a realistic range (stronger than random) instead of two
+  // random cards — this is what makes turn/river call equity trustworthy.
+  const rangeFraction = estimateRangeFraction({
+    street: state.street,
+    facingBet: callAmount > 0,
+    toCall: callAmount,
+    pot: potBefore,
+  });
+
+  const eq = estimateEquityVsRange({
     heroCards: hero.hole as [Card, Card],
     board,
     opponents: Math.max(1, liveOpponents),
     iterations,
-    mode: 'random',
+    rangeFraction,
   });
 
   let outs = 0;
@@ -62,9 +80,6 @@ export function computeHeroAnalysis(state: GameState, iterations = 1200): HeroAn
     }
   }
 
-  const potBefore = totalPot(state);
-  const legal = state.toAct === hi ? getLegalActions(state, hi) : null;
-  const callAmount = legal?.callAmount ?? 0;
   const po = potOdds(potBefore, callAmount);
   const evCall = callEV(eq.equity, potBefore, callAmount);
 
@@ -88,5 +103,8 @@ export function computeHeroAnalysis(state: GameState, iterations = 1200): HeroAn
     raiseEVHint,
     madeHand,
     potBefore,
+    rangeFraction,
+    iterations: eq.iterations,
+    liveOpponents: Math.max(1, liveOpponents),
   };
 }

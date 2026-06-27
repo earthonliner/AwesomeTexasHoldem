@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateEquity } from './monteCarlo';
+import { estimateEquity, estimateEquityVsRange, estimateRangeFraction } from './monteCarlo';
 import { parseCards } from './deck';
 import type { Card } from './types';
 
@@ -67,5 +67,46 @@ describe('estimateEquity', () => {
     const random = estimateEquity({ heroCards: hero('Ks Kd'), opponents: 3, iterations: 3000, rng: seeded(9), mode: 'random' });
     const range = estimateEquity({ heroCards: hero('Ks Kd'), opponents: 3, iterations: 3000, rng: seeded(9), mode: 'range' });
     expect(range.win).toBeLessThanOrEqual(random.win + 0.02);
+  });
+});
+
+describe('estimateEquityVsRange (board-aware opponent range)', () => {
+  it('rates a marginal made hand much lower vs a tight range than vs random on the river', () => {
+    // Hero has top pair, weak kicker on a scary river.
+    const heroCards = hero('As 9c');
+    const board = parseCards('Ah 7d 2h Kc 4s');
+    const random = estimateEquity({ heroCards, board, opponents: 1, iterations: 3000, rng: seeded(11), mode: 'random' });
+    const tight = estimateEquityVsRange({ heroCards, board, opponents: 1, iterations: 3000, rng: seeded(11), rangeFraction: 0.2 });
+    // The realistic tight range should give noticeably less equity than vs random.
+    expect(tight.equity).toBeLessThan(random.equity);
+    expect(random.equity - tight.equity).toBeGreaterThan(0.1);
+  });
+
+  it('a tighter range fraction never increases hero equity', () => {
+    const heroCards = hero('Qd Qs');
+    const board = parseCards('Jh 8c 3s 2d');
+    const wide = estimateEquityVsRange({ heroCards, board, opponents: 2, iterations: 2500, rng: seeded(13), rangeFraction: 0.7 });
+    const narrow = estimateEquityVsRange({ heroCards, board, opponents: 2, iterations: 2500, rng: seeded(13), rangeFraction: 0.2 });
+    expect(narrow.equity).toBeLessThanOrEqual(wide.equity + 0.02);
+  });
+
+  it('still recognizes the nuts as ~100% even vs the tightest range', () => {
+    const r = estimateEquityVsRange({
+      heroCards: hero('As Ks'),
+      board: parseCards('Qs Js Ts'),
+      opponents: 2,
+      iterations: 2000,
+      rng: seeded(15),
+      rangeFraction: 0.1,
+    });
+    expect(r.win + r.tie).toBe(1);
+  });
+
+  it('chooses a tighter range when facing a large bet', () => {
+    const noBet = estimateRangeFraction({ street: 'river', facingBet: false, toCall: 0, pot: 20 });
+    const smallBet = estimateRangeFraction({ street: 'river', facingBet: true, toCall: 5, pot: 20 });
+    const bigBet = estimateRangeFraction({ street: 'river', facingBet: true, toCall: 30, pot: 20 });
+    expect(smallBet).toBeLessThan(noBet);
+    expect(bigBet).toBeLessThan(smallBet);
   });
 });
