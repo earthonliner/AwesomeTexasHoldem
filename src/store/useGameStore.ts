@@ -24,10 +24,13 @@ const persisted = loadPersisted();
 setMuted(!persisted.settings.sound);
 
 let aiTimer: ReturnType<typeof setTimeout> | null = null;
+let nextHandTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearTimers(): void {
   if (aiTimer) clearTimeout(aiTimer);
+  if (nextHandTimer) clearTimeout(nextHandTimer);
   aiTimer = null;
+  nextHandTimer = null;
 }
 
 const HERO_NAMES = ['你 (Hero)'];
@@ -50,6 +53,8 @@ interface GameStore {
   /** Hero decision snapshots accumulated during the live hand. */
   liveDecisions: DecisionSnapshot[];
   lastResultText: string;
+  /** True when the hero folded during preflop: fast-forward and auto-advance. */
+  heroFoldedPreflop: boolean;
 
   newTable: () => void;
   startNextHand: () => void;
@@ -111,6 +116,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   handOver: false,
   liveDecisions: [],
   lastResultText: '',
+  heroFoldedPreflop: false,
 
   newTable: () => {
     clearTimers();
@@ -156,6 +162,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       thinkingId: null,
       liveDecisions: [],
       lastResultText: '',
+      heroFoldedPreflop: false,
     });
     tick(set, get);
   },
@@ -199,6 +206,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
         committed,
       };
       set({ liveDecisions: [...state.liveDecisions, snap] });
+    }
+
+    // Folding preflop means there is nothing to review — flag it so the rest of
+    // the hand resolves quickly and the next hand starts automatically.
+    if (action.type === 'fold' && game.street === 'preflop') {
+      set({ heroFoldedPreflop: true });
     }
 
     playActionSound(action.type, state.settings.sound);
@@ -283,7 +296,12 @@ function scheduleAI(set: SetFn, get: GetFn, idx: number): void {
 
   set({ thinkingId: player.id });
 
-  const delay = state.settings.fastMode ? Math.min(350, decision.thinkMs * 0.3) : decision.thinkMs;
+  // If the hero already folded preflop, resolve the rest of the hand snappily.
+  const delay = state.heroFoldedPreflop
+    ? 80
+    : state.settings.fastMode
+      ? Math.min(350, decision.thinkMs * 0.3)
+      : decision.thinkMs;
   aiTimer = setTimeout(() => {
     const cur = get();
     if (!cur.game || cur.game.toAct !== idx) return;
@@ -405,11 +423,17 @@ function finalize(set: SetFn, get: GetFn): void {
   }
 
   const history = [...state.history, entry];
-  // Stop on the final board so the player can review the hand. The next hand is
-  // started only when the player explicitly clicks "下一手".
+  // Normally we stop on the final board so the player can review the hand (the
+  // next hand starts only when they click "下一手"). But if the hero folded
+  // preflop there is nothing to review, so auto-advance quickly.
   set({ seats, stats, heroProfile, opponentStats, history, handOver: true, thinkingId: null, lastResultText: resultText });
 
   persistNow({ ...get(), stats, heroProfile, history } as GameStore);
+
+  if (state.heroFoldedPreflop) {
+    const delay = state.settings.fastMode ? 250 : 550;
+    nextHandTimer = setTimeout(() => get().startNextHand(), delay);
+  }
 }
 
 function buildResultText(game: GameState, heroId: number, heroDelta: number): string {
