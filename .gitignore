@@ -6,3 +6,10 @@ dist-ssr
 coverage
 .vite
 *.log
+
+# Capacitor native iOS build artifacts (regenerated per machine)
+ios/App/Pods
+ios/App/App/public
+ios/DerivedData
+ios/App/build
+ios/.gradle

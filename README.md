@@ -43,9 +43,42 @@ npm run dev:host        # 或先 npm run build 再 npm run preview
 
 终端会显示形如 `http://192.168.x.x:5173/` 的 **Network** 地址，在 iPad Safari 输入该地址即可。同样可"添加到主屏幕"。
 
-### 方式三：用 Capacitor 打包成原生 App（需要 Mac + Xcode）
+### 方式三：用 Capacitor 打包成原生 App，真正离线（如飞机上）
 
-若要进 App Store 或正式分发，可用 [Capacitor](https://capacitorjs.com/) 包一层 WebView：`npm i -D @capacitor/cli @capacitor/core @capacitor/ios`，`npx cap init`，把 `webDir` 指向 `dist`，`npx cap add ios` 后用 Xcode 在 iPad 上运行/签名。此方式较重，多数练习场景用方式一/二即可。
+本仓库已内置 Capacitor 配置（`capacitor.config.ts`，`webDir` 指向 `dist`）。原生 App 会把全部网页资源打包进安装包，**完全不依赖网络**，装好后即使飞行模式也能玩。构建 iOS App **必须在 Mac 上用 Xcode**。
+
+**前置条件**：一台 Mac、[Xcode](https://apps.apple.com/app/xcode/id497799835)（App Store 安装）、一个 Apple ID（免费即可，免费签名的 App 有效期 7 天，到期重连 Mac 再运行一次即可；付费开发者账号有效期 1 年）、一根数据线。
+
+**步骤**：
+
+```bash
+# 1) 在 Mac 上获取代码并安装依赖
+git clone <本仓库地址> && cd TexasPoker
+npm install
+
+# 2) 构建网页产物并生成 iOS 原生工程（首次）
+npm run cap:add:ios      # = npm run build && npx cap add ios
+
+# 3) 同步资源并打开 Xcode
+npm run ipad             # = build + cap sync ios + cap open ios
+```
+
+随后在 **Xcode** 里：
+
+1. 左侧选中 **App** 项目 → **Signing & Capabilities** 选项卡。
+2. **Team** 选择你的 Apple ID（没有就点 *Add an Account* 登录）；把 **Bundle Identifier** 改成全局唯一的名字，如 `com.你的名字.texaspoker`。
+3. 用数据线把 **iPad 连到 Mac**，在 iPad 上点"信任此电脑"。
+4. Xcode 顶部的运行目标选择你的 **iPad**（不是模拟器），点 **▶ 运行**。App 会被安装到 iPad。
+5. 首次运行 iPad 会拦截：到 iPad **设置 → 通用 → VPN 与设备管理 → 开发者 App**，点信任你的 Apple ID 证书。
+6. 回到主屏幕打开 App —— 之后**断网/飞行模式都能离线运行**。
+7. 以后更新内容：改完代码 `npm run ipad`，在 Xcode 再 ▶ 运行一次即可。
+
+> 说明：`ios/` 原生工程是按机器生成的（含 CocoaPods 等），已在 `.gitignore` 中忽略，不随仓库提交——在你的 Mac 上首次 `npm run cap:add:ios` 时自动生成。
+
+### 哪种最适合"飞机上离线玩"？
+
+- **没有 Mac / 想最快**：用**方式一或二**——只要在有网时用 Safari 打开一次并"添加到主屏幕"，PWA 会把资源缓存到本地，之后断网（飞机上）照常运行。这是最简单直接的离线方案，无需任何编译。
+- **想要装进去、彻底不依赖任何服务器**：用**方式三**做成原生 App，从安装那一刻起就完全离线。
 
 > 提示：界面已做响应式布局，iPad 横屏为左右双栏（牌桌 + 侧边面板），竖屏自动堆叠；下注滑块、快捷按钮、全下二次确认等均支持触控。
 
