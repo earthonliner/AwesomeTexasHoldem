@@ -11,14 +11,43 @@
 ```bash
 npm install      # 安装依赖
 npm run dev      # 启动开发服务器 (默认 http://localhost:5173)
+npm run dev:host # 开发服务器并暴露局域网地址 (供 iPad/手机访问)
 npm run build    # 生产构建 (输出到 dist/，可直接静态托管或本地打开)
-npm run preview  # 预览生产构建
+npm run preview  # 预览生产构建 (已开启 --host)
 npm test         # 运行全部单元测试
 npm run test:watch   # 监听模式
 npm run typecheck    # 仅类型检查
 ```
 
 > 构建产物为纯静态资源（`base: './'`），可直接双击 `dist/index.html` 离线运行。
+
+## 在 iPad / 平板上运行
+
+本项目是纯静态、可离线的 PWA（渐进式 Web 应用），在 iPad 上有三种方式：
+
+### 方式一：部署到静态托管后用 Safari 打开（最省心，推荐）
+
+```bash
+npm install && npm run build   # 产物在 dist/
+```
+
+把 `dist/` 目录上传到任意静态托管（Netlify 拖拽上传、GitHub Pages、Vercel、Cloudflare Pages 等），在 iPad 的 **Safari** 打开该网址。然后点 **分享 → 添加到主屏幕**，即可像原生 App 一样全屏、离线运行（已内置 Service Worker 预缓存，首次联网打开后即可断网使用）。
+
+### 方式二：同局域网下连电脑的开发/预览服务器（无需部署）
+
+在与 iPad 同一 Wi-Fi 的电脑上运行：
+
+```bash
+npm run dev:host        # 或先 npm run build 再 npm run preview
+```
+
+终端会显示形如 `http://192.168.x.x:5173/` 的 **Network** 地址，在 iPad Safari 输入该地址即可。同样可"添加到主屏幕"。
+
+### 方式三：用 Capacitor 打包成原生 App（需要 Mac + Xcode）
+
+若要进 App Store 或正式分发，可用 [Capacitor](https://capacitorjs.com/) 包一层 WebView：`npm i -D @capacitor/cli @capacitor/core @capacitor/ios`，`npx cap init`，把 `webDir` 指向 `dist`，`npx cap add ios` 后用 Xcode 在 iPad 上运行/签名。此方式较重，多数练习场景用方式一/二即可。
+
+> 提示：界面已做响应式布局，iPad 横屏为左右双栏（牌桌 + 侧边面板），竖屏自动堆叠；下注滑块、快捷按钮、全下二次确认等均支持触控。
 
 ## 玩法概览
 
