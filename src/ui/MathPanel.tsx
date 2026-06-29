@@ -31,7 +31,7 @@ export function MathPanel({ analysis, isHeroTurn }: Props) {
           ) : (
             <>
               <Row
-                label={`实时胜率 (vs 估计范围·前${Math.round(analysis.rangeFraction * 100)}%)`}
+                label={`实时胜率 (vs 估计范围·前${Math.round(analysis.rangeFraction * 100)}%${analysis.bluffShare > 0 ? `+诈唬${Math.round(analysis.bluffShare * 100)}%` : ''})`}
                 value={formatPercent(analysis.equity)}
                 highlight
               />

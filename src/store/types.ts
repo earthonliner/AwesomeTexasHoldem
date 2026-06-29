@@ -52,6 +52,7 @@ export interface DecisionSnapshot {
   tie: number;
   potOdds: number;
   rangeFraction: number;
+  bluffShare: number;
   iterations: number;
   liveOpponents: number;
   evCall: number;

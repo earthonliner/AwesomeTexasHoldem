@@ -195,6 +195,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         tie: analysis.tie,
         potOdds: analysis.potOdds,
         rangeFraction: analysis.rangeFraction,
+        bluffShare: analysis.bluffShare,
         iterations: analysis.iterations,
         liveOpponents: analysis.liveOpponents,
         evCall: analysis.callEV,

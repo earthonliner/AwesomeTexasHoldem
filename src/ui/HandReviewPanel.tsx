@@ -160,9 +160,15 @@ function DecisionCard({ d, r }: { d: DecisionSnapshot; r: ReturnType<typeof revi
           <div className="font-sans text-slate-400">胜率（蒙特卡洛模拟）：</div>
           <div>
             模拟 {d.iterations ?? '—'} 局，对手按
-            {rangePct !== null ? `「当前牌面前 ${rangePct}% 强手牌」` : '估计范围'}
+            {rangePct !== null ? `「当前牌面前 ${rangePct}% 强手牌` : '估计范围'}
+            {d.bluffShare ? ` + ${Math.round(d.bluffShare * 100)}% 诈唬」(极化范围)` : rangePct !== null ? '」' : ''}
             取样{d.liveOpponents ? ` × ${d.liveOpponents} 名对手` : ''}。
           </div>
+          {d.bluffShare ? (
+            <div className="font-sans text-slate-500">
+              已计入对手下注可能是诈唬：你的中等牌可抓掉这部分诈唬，胜率不再是 0%。
+            </div>
+          ) : null}
           <div>
             胜率 = 胜局 / 总局 = {formatPercent(win)}
             {tie > 0 ? `（平局 ${formatPercent(tie)}，按分摊计入）` : ''}

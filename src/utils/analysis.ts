@@ -1,8 +1,9 @@
 import type { GameState } from '../engine/gameTypes';
 import type { Card } from '../engine/types';
-import { estimateEquityVsRange, estimateRangeFraction } from '../engine/monteCarlo';
+import { estimateEquityVsRange, estimateRangeFraction, estimateBluffShare } from '../engine/monteCarlo';
 import { countOuts, hitProbability, potOdds, callEV, evaluateHand, CATEGORY_LABEL } from '../engine';
 import { getLegalActions, totalPot } from '../engine/game';
+import { boardWetness } from '../ai/boardTexture';
 
 export interface HeroAnalysis {
   equity: number;
@@ -20,6 +21,8 @@ export interface HeroAnalysis {
   potBefore: number;
   /** Assumed opponent range tightness (fraction of strongest hands). */
   rangeFraction: number;
+  /** Assumed share of the opponent's betting range that is a bluff. */
+  bluffShare: number;
   iterations: number;
   liveOpponents: number;
 }
@@ -48,11 +51,19 @@ export function computeHeroAnalysis(state: GameState, iterations = 1200): HeroAn
 
   // Model opponents as a realistic range (stronger than random) instead of two
   // random cards — this is what makes turn/river call equity trustworthy.
+  const facingBet = callAmount > 0;
   const rangeFraction = estimateRangeFraction({
     street: state.street,
-    facingBet: callAmount > 0,
+    facingBet,
     toCall: callAmount,
     pot: potBefore,
+  });
+  // Model a polarized betting range (value + bluffs) so bluff-catchers get
+  // realistic equity instead of ~0% against a value-only range.
+  const bluffShare = estimateBluffShare({
+    facingBet,
+    liveOpponents: Math.max(1, liveOpponents),
+    wetness: boardWetness(board),
   });
 
   const eq = estimateEquityVsRange({
@@ -61,6 +72,7 @@ export function computeHeroAnalysis(state: GameState, iterations = 1200): HeroAn
     opponents: Math.max(1, liveOpponents),
     iterations,
     rangeFraction,
+    bluffShare,
   });
 
   let outs = 0;
@@ -104,6 +116,7 @@ export function computeHeroAnalysis(state: GameState, iterations = 1200): HeroAn
     madeHand,
     potBefore,
     rangeFraction,
+    bluffShare,
     iterations: eq.iterations,
     liveOpponents: Math.max(1, liveOpponents),
   };

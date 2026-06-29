@@ -13,6 +13,7 @@ function snap(partial: Partial<DecisionSnapshot>): DecisionSnapshot {
     tie: 0,
     potOdds: 4 / 14,
     rangeFraction: 0.4,
+    bluffShare: 0.3,
     iterations: 1000,
     liveOpponents: 1,
     evCall: 0,
