@@ -8,25 +8,29 @@ import { HistoryPanel } from './ui/HistoryPanel';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { HandReviewPanel } from './ui/HandReviewPanel';
 import { DocsModal } from './ui/DocsModal';
+import { OnlineRoot } from './ui/online/OnlineRoot';
 
 export default function App() {
   const game = useGameStore((s) => s.game);
   const started = game !== null;
   const [showDocs, setShowDocs] = useState(false);
+  const [online, setOnline] = useState(false);
+
+  if (online) return <OnlineRoot onExit={() => setOnline(false)} />;
 
   return (
     <>
       {started ? (
         <GameView onOpenDocs={() => setShowDocs(true)} />
       ) : (
-        <StartScreen onOpenDocs={() => setShowDocs(true)} />
+        <StartScreen onOpenDocs={() => setShowDocs(true)} onGoOnline={() => setOnline(true)} />
       )}
       {showDocs && <DocsModal onClose={() => setShowDocs(false)} />}
     </>
   );
 }
 
-function StartScreen({ onOpenDocs }: { onOpenDocs: () => void }) {
+function StartScreen({ onOpenDocs, onGoOnline }: { onOpenDocs: () => void; onGoOnline: () => void }) {
   const settings = useGameStore((s) => s.settings);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const newTable = useGameStore((s) => s.newTable);
@@ -48,6 +52,12 @@ function StartScreen({ onOpenDocs }: { onOpenDocs: () => void }) {
           className="mt-5 w-full rounded-xl bg-gradient-to-r from-emerald-600 to-amber-600 py-3 text-lg font-bold text-white shadow-lg transition hover:brightness-110 active:scale-95"
         >
           开始游戏
+        </button>
+        <button
+          onClick={onGoOnline}
+          className="mt-3 w-full rounded-xl bg-gradient-to-r from-sky-600 to-emerald-600 py-2.5 text-base font-bold text-white shadow transition hover:brightness-110 active:scale-95"
+        >
+          🌐 局域网联机（多人 + 人机）
         </button>
         <button
           onClick={onOpenDocs}

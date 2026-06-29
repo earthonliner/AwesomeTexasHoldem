@@ -17,6 +17,8 @@ export interface SeatInit {
   name: string;
   isHero: boolean;
   stack: number;
+  /** Force this seat to sit out the hand (e.g. empty/disconnected seats). */
+  sittingOut?: boolean;
 }
 
 /** Order of streets used when advancing the hand. */
@@ -77,7 +79,7 @@ export function startHand(
     totalCommitted: 0,
     hasActed: false,
     lastAction: null,
-    sittingOut: s.stack <= 0,
+    sittingOut: (s.sittingOut ?? false) || s.stack <= 0,
   }));
 
   const deck = shuffle(makeDeck(), rng);

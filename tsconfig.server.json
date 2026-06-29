@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "types": ["node"]
+  },
+  "include": [
+    "server/**/*.ts",
+    "src/online/protocol.ts",
+    "src/online/redact.ts",
+    "src/engine/**/*.ts",
+    "src/ai/**/*.ts"
+  ],
+  "exclude": ["src/**/*.test.ts"]
+}
