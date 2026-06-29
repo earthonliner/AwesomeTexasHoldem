@@ -37,6 +37,7 @@ interface ServerSeat {
   clientId?: string; // attached connection
   connected: boolean;
   sittingOut: boolean; // not dealt into the next hand
+  net: number; // table-lifetime net P/L (chips), excluding rebuys
 }
 
 export interface Connection {
@@ -61,6 +62,7 @@ export class Room {
   private handOver = false;
   private lastResultText = '';
   private turnDeadline: number | null = null;
+  private handStartStacks: Record<number, number> = {};
 
   private actionTimer: ReturnType<typeof setTimeout> | null = null;
   private nextHandTimer: ReturnType<typeof setTimeout> | null = null;
@@ -102,6 +104,7 @@ export class Room {
     seat.connected = false;
     seat.sittingOut = false;
     seat.personality = undefined;
+    seat.net = 0;
   }
 
   // ---------- message handling ----------
@@ -174,6 +177,7 @@ export class Room {
     seat.token = randomUUID();
     seat.name = this.pendingNames.get(clientId) || 'Player';
     seat.stack = this.config.startingStackBB * BB_CHIPS;
+    seat.net = 0;
     seat.sittingOut = this.phase === 'playing'; // join from the next hand
   }
 
@@ -203,6 +207,7 @@ export class Room {
           stack: 0,
           connected: false,
           sittingOut: false,
+          net: 0,
         },
       );
       next[i].seatId = i;
@@ -217,6 +222,7 @@ export class Room {
     seat.name = AI_NAMES[seatId % AI_NAMES.length];
     seat.personality = generatePersonality(this.config.difficulty, Math.random);
     seat.stack = this.config.startingStackBB * BB_CHIPS;
+    seat.net = 0;
     seat.sittingOut = this.phase === 'playing';
   }
 
@@ -234,6 +240,7 @@ export class Room {
   private startGame(): void {
     if (this.activeSeats().length < 2) return;
     this.phase = 'playing';
+    for (const s of this.seats) s.net = 0; // fresh table session
     this.buttonSeatId = this.activeSeats()[0].seatId;
     this.startHand(true);
   }
@@ -277,6 +284,10 @@ export class Room {
       stack: s.stack,
       sittingOut: s.kind === 'empty' || s.sittingOut || s.stack <= 0,
     }));
+
+    // Baseline stacks (post-rebuy) for this hand, used to accrue net P/L.
+    this.handStartStacks = {};
+    for (const s of this.seats) this.handStartStacks[s.seatId] = s.stack;
 
     this.game = startHand(cfg, seatInit, this.buttonSeatId, (this.game?.handNumber ?? 0) + 1, Math.random);
     this.handOver = false;
@@ -368,6 +379,11 @@ export class Room {
   private finishHand(): void {
     const game = this.game!;
     this.syncStacks();
+    // Accrue table-lifetime net P/L (excludes rebuys via the post-rebuy baseline).
+    for (const p of game.players) {
+      const base = this.handStartStacks[p.id];
+      if (base !== undefined) this.seats[p.id].net += p.stack - base;
+    }
     this.handOver = true;
     this.turnDeadline = null;
     this.lastResultText = this.buildResultText(game);
@@ -446,6 +462,7 @@ export class Room {
       name: s.name,
       connected: s.connected,
       stack: s.stack,
+      net: s.net,
     }));
   }
 

@@ -18,6 +18,8 @@ export interface SeatView {
   name: string;
   connected: boolean;
   stack: number;
+  /** Table-lifetime net profit/loss (chips), excluding rebuys. */
+  net: number;
 }
 
 export interface RoomView {

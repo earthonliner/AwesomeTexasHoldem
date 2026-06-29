@@ -13,6 +13,8 @@ interface Props {
   opponentStats: Record<number, OpponentStat>;
   resultText: string;
   handOver: boolean;
+  /** Table-lifetime net P/L per player id (chips). */
+  seatNet?: Record<number, number>;
 }
 
 function positionLabel(game: GameState, idx: number): string {
@@ -24,7 +26,7 @@ function positionLabel(game: GameState, idx: number): string {
   return '';
 }
 
-export function PokerTable({ game, thinkingId, showHud, opponentStats, resultText, handOver }: Props) {
+export function PokerTable({ game, thinkingId, showHud, opponentStats, resultText, handOver, seatNet }: Props) {
   const positions = seatPositions(game.players.length);
   const pot = totalPot(game);
 
@@ -66,6 +68,7 @@ export function PokerTable({ game, thinkingId, showHud, opponentStats, resultTex
               showHud={showHud}
               hudStat={opponentStats[player.id]}
               positionLabel={positionLabel(game, idx)}
+              net={seatNet?.[player.id]}
             />
           </div>
         );

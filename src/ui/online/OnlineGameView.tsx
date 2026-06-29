@@ -33,6 +33,12 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
   const thinkingId =
     view.toActSeatId != null && view.seatKinds?.[view.toActSeatId] === 'ai' ? view.toActSeatId : null;
 
+  const seatNet = useMemo(() => {
+    const m: Record<number, number> = {};
+    for (const s of view.seats) m[s.seatId] = s.net;
+    return m;
+  }, [view.seats]);
+
   const toActName =
     view.toActSeatId != null ? game.players[view.toActSeatId]?.name ?? '' : '';
   const turnText = view.handOver
@@ -78,6 +84,7 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
             opponentStats={{}}
             resultText={view.lastResultText ?? ''}
             handOver={!!view.handOver}
+            seatNet={seatNet}
           />
 
           {youSeatId === null ? (
@@ -119,7 +126,16 @@ function PlayersPanel({ view }: { view: RoomView }) {
                 {s.kind === 'ai' && <span className="rounded bg-fuchsia-700 px-1 text-[10px]">AI</span>}
                 {s.kind === 'human' && !s.connected && <span className="text-rose-400">（掉线）</span>}
               </span>
-              <span className="font-mono text-yellow-300">{(s.stack / 2).toFixed(0)} BB</span>
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-yellow-300">{(s.stack / 2).toFixed(0)} BB</span>
+                <span
+                  className={`font-mono text-xs ${s.net > 0 ? 'text-emerald-400' : s.net < 0 ? 'text-rose-400' : 'text-slate-500'}`}
+                  title="本桌历史盈亏"
+                >
+                  {s.net >= 0 ? '+' : ''}
+                  {(s.net / 2).toFixed(1)}
+                </span>
+              </span>
             </li>
           ))}
       </ul>

@@ -44,6 +44,8 @@ interface GameStore {
   opponentStats: Record<number, OpponentStat>;
 
   seats: Seat[];
+  /** Table-lifetime net P/L per seat id (chips), excluding rebuys. */
+  seatNet: Record<number, number>;
   buttonIndex: number;
   handNumber: number;
   game: GameState | null;
@@ -108,6 +110,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   opponentStats: {},
 
   seats: [],
+  seatNet: {},
   buttonIndex: 0,
   handNumber: 0,
   game: null,
@@ -124,6 +127,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const seats = buildSeats(settings);
     set({
       seats,
+      seatNet: {},
       buttonIndex: Math.floor(Math.random() * seats.length),
       handNumber: 0,
       opponentStats: {},
@@ -372,6 +376,14 @@ function finalize(set: SetFn, get: GetFn): void {
   const heroStart = state.seats.find((s) => s.isHero)!.stack;
   const heroDelta = hero.stack - heroStart;
 
+  // Accumulate table-lifetime net P/L per seat (delta vs the post-rebuy stack at
+  // the start of this hand), so rebuys never count as winnings.
+  const seatNet = { ...state.seatNet };
+  for (const s of state.seats) {
+    const gp = game.players.find((p) => p.id === s.id);
+    if (gp) seatNet[s.id] = (seatNet[s.id] ?? 0) + (gp.stack - s.stack);
+  }
+
   // Update seats from the resolved stacks.
   const seats = state.seats.map((s) => {
     const gp = game.players.find((p) => p.id === s.id)!;
@@ -427,7 +439,7 @@ function finalize(set: SetFn, get: GetFn): void {
   // Normally we stop on the final board so the player can review the hand (the
   // next hand starts only when they click "下一手"). But if the hero folded
   // preflop there is nothing to review, so auto-advance quickly.
-  set({ seats, stats, heroProfile, opponentStats, history, handOver: true, thinkingId: null, lastResultText: resultText });
+  set({ seats, seatNet, stats, heroProfile, opponentStats, history, handOver: true, thinkingId: null, lastResultText: resultText });
 
   persistNow({ ...get(), stats, heroProfile, history } as GameStore);
 
