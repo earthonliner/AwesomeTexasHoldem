@@ -32,6 +32,65 @@ function heroIndex(state: GameState): number {
   return state.players.findIndex((p) => p.isHero);
 }
 
+export interface FoldOutcome {
+  /** The full 5-card board (real cards plus a runout if the hand ended early). */
+  fullBoard: Card[];
+  result: 'win' | 'tie' | 'lose';
+  heroCategory: string;
+  bestOppCategory: string;
+  bestOppName: string;
+  /** True if part of the board was a hypothetical runout (hand ended early). */
+  hypothetical: boolean;
+}
+
+/**
+ * After the hero folds, work out whether the folded hand *would* have won at
+ * showdown. The board is completed with a plausible runout from the remaining
+ * deck when the hand ended before the river, and the hero's hand is compared
+ * against every other dealt-in player. Purely for post-hand learning.
+ */
+export function computeFoldOutcome(args: {
+  heroHole: Card[];
+  board: Card[];
+  deck: Card[];
+  opponents: { name: string; hole: Card[] }[];
+}): FoldOutcome | null {
+  const { heroHole, board, deck, opponents } = args;
+  if (heroHole.length < 2) return null;
+  const liveOpps = opponents.filter((o) => o.hole.length === 2);
+  if (liveOpps.length === 0) return null;
+
+  const need = 5 - board.length;
+  if (need > deck.length) return null;
+  const fullBoard = [...board, ...deck.slice(0, need)];
+  const hypothetical = need > 0;
+
+  const heroEval = evaluateHand([...heroHole, ...fullBoard]);
+  let bestScore = -Infinity;
+  let bestName = '';
+  let bestLabel = '';
+  for (const o of liveOpps) {
+    const e = evaluateHand([...o.hole, ...fullBoard]);
+    if (e.score > bestScore) {
+      bestScore = e.score;
+      bestName = o.name;
+      bestLabel = CATEGORY_LABEL[e.category];
+    }
+  }
+
+  const result: FoldOutcome['result'] =
+    heroEval.score > bestScore ? 'win' : heroEval.score === bestScore ? 'tie' : 'lose';
+
+  return {
+    fullBoard,
+    result,
+    heroCategory: CATEGORY_LABEL[heroEval.category],
+    bestOppCategory: bestLabel,
+    bestOppName: bestName,
+    hypothetical,
+  };
+}
+
 /**
  * Compute the objective math panel for the hero's current spot. Runs a quick
  * Monte-Carlo so it is safe to call on each hero turn.

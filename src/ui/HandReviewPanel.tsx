@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import type { DecisionSnapshot } from '../store/types';
+import type { Card } from '../engine/types';
+import type { DecisionSnapshot, HandHistoryEntry } from '../store/types';
+import type { FoldOutcome } from '../utils/analysis';
 import { reviewDecision, VERDICT_META, type Verdict } from '../utils/review';
 import { formatBB, formatSigned, formatPercent, bbNum } from '../utils/format';
 import { PlayingCard } from './PlayingCard';
@@ -27,16 +29,17 @@ const ACTION_LABEL: Record<string, string> = {
  * whether the action was reasonable.
  */
 export function HandReviewPanel({
-  decisions,
+  entry,
   resultText,
-  heroDelta,
   onNext,
 }: {
-  decisions: DecisionSnapshot[];
+  entry: HandHistoryEntry;
   resultText: string;
-  heroDelta: number;
   onNext: () => void;
 }) {
+  const decisions = entry.decisions;
+  const heroDelta = entry.heroDelta;
+  const foldOutcome = entry.foldOutcome ?? null;
   const reviews = decisions.map((d) => ({ d, r: reviewDecision(d) }));
   const counts = reviews.reduce(
     (acc, { r }) => {
@@ -70,6 +73,8 @@ export function HandReviewPanel({
           </span>
         )}
       </div>
+
+      {foldOutcome && <FoldOutcomeBlock heroHole={entry.heroHole} outcome={foldOutcome} />}
 
       {decisions.length === 0 ? (
         <p className="text-xs text-slate-500">本手你没有需要决策的行动（如被自动盖牌或直接获胜）。</p>
@@ -196,6 +201,57 @@ function DecisionCard({ d, r }: { d: DecisionSnapshot; r: ReturnType<typeof revi
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function FoldOutcomeBlock({ heroHole, outcome }: { heroHole: Card[]; outcome: FoldOutcome }) {
+  const meta = {
+    win: { text: '本可获胜', cls: 'text-rose-300', ring: 'ring-rose-500/50' },
+    tie: { text: '本可打平', cls: 'text-amber-300', ring: 'ring-amber-500/50' },
+    lose: { text: '弃牌正确（也会输）', cls: 'text-emerald-300', ring: 'ring-emerald-500/50' },
+  }[outcome.result];
+
+  return (
+    <div className={`mb-3 rounded-lg bg-slate-800/60 p-2 text-xs ring-1 ${meta.ring}`}>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="font-semibold text-slate-200">🃏 弃牌牌面分析</span>
+        <span className={`font-semibold ${meta.cls}`}>{meta.text}</span>
+      </div>
+      <div className="mb-2 flex items-center gap-3">
+        <div>
+          <div className="mb-0.5 text-[10px] text-slate-400">你弃掉的牌</div>
+          <div className="flex gap-1">
+            {heroHole.map((c, i) => (
+              <PlayingCard key={i} card={c} size="sm" />
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="mb-0.5 text-[10px] text-slate-400">
+            {outcome.hypothetical ? '公共牌（含模拟发牌）' : '最终公共牌'}
+          </div>
+          <div className="flex gap-1">
+            {outcome.fullBoard.map((c, i) => (
+              <PlayingCard key={i} card={c} size="sm" />
+            ))}
+          </div>
+        </div>
+      </div>
+      <p className="text-slate-400">
+        你的成牌：<span className="text-slate-200">{outcome.heroCategory}</span>
+        {outcome.result === 'lose' ? (
+          <>
+            ；最强对手 <span className="text-slate-200">{outcome.bestOppName}</span> 的{' '}
+            <span className="text-slate-200">{outcome.bestOppCategory}</span> 更大。
+          </>
+        ) : outcome.result === 'win' ? (
+          <>；本可击败所有对手（最强对手 {outcome.bestOppName} 的 {outcome.bestOppCategory}）。</>
+        ) : (
+          <>；与 {outcome.bestOppName} 的 {outcome.bestOppCategory} 同大。</>
+        )}
+        {outcome.hypothetical && <span className="text-slate-500">（部分公共牌为模拟发出，仅供参考）</span>}
+      </p>
     </div>
   );
 }

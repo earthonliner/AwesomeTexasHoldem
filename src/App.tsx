@@ -85,7 +85,6 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
     analysis,
     thinkingId,
     handOver,
-    heroFoldedPreflop,
     opponentStats,
     seatNet,
     history,
@@ -104,9 +103,7 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
   const hero = game.players.find((p) => p.isHero)!;
   const isHeroTurn = game.toAct === game.players.findIndex((p) => p.isHero) && game.status === 'betting';
   const heroBusted = hero.stack <= 0 && game.status === 'complete';
-  // After a preflop fold the hand auto-advances quickly, so suppress the review
-  // panel and next-hand prompt to avoid a flash.
-  const lastHand = handOver && !heroFoldedPreflop && history.length > 0 ? history[history.length - 1] : null;
+  const lastHand = handOver && history.length > 0 ? history[history.length - 1] : null;
 
   return (
     <div className="mx-auto flex min-h-full max-w-7xl flex-col px-3 py-3">
@@ -169,7 +166,7 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
             <ActionBar game={game} onAct={heroAct} />
           )}
 
-          {handOver && !heroFoldedPreflop && (
+          {handOver && (
             <div className="flex justify-center">
               <button
                 onClick={startNextHand}
@@ -188,14 +185,7 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
               <SettingsPanel settings={settings} onChange={updateSettings} showTableNote />
             </div>
           )}
-          {lastHand && (
-            <HandReviewPanel
-              decisions={lastHand.decisions}
-              resultText={lastResultText}
-              heroDelta={lastHand.heroDelta}
-              onNext={startNextHand}
-            />
-          )}
+          {lastHand && <HandReviewPanel entry={lastHand} resultText={lastResultText} onNext={startNextHand} />}
           {settings.mathEnabled && !handOver && <MathPanel analysis={analysis} isHeroTurn={isHeroTurn} />}
           <StatsPanel stats={stats} onReset={resetStats} />
           <HistoryPanel history={history} />
