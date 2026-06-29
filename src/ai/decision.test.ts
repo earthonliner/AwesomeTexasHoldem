@@ -138,6 +138,60 @@ describe('dynamicBluffFrequency', () => {
   });
 });
 
+describe('decide - pot odds awareness (postflop)', () => {
+  const board = parseCards('2h 7s Td');
+  const hole = parseCards('Kd Qc') as [Card, Card]; // two overcards, marginal
+
+  function foldRate(toCall: number, pot: number): number {
+    let folds = 0;
+    const n = 24;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'medium',
+        ctx: ctx({ hole, board, street: 'flop', canCheck: false, toCall, potBefore: pot }),
+        rng: seeded(s + 100),
+        iterations: 200,
+      });
+      if (d.action === 'fold') folds++;
+    }
+    return folds / n;
+  }
+
+  it('folds far more often facing a big bet than a small one (same hand)', () => {
+    const small = foldRate(4, 40); // pot odds ~9%
+    const big = foldRate(60, 40); // pot odds ~60%
+    expect(big).toBeGreaterThan(small + 0.2); // clear pot-odds sensitivity
+    expect(small).toBeLessThan(0.4); // rarely folds when cheap
+    expect(big).toBeGreaterThan(0.5); // often folds when expensive
+  });
+});
+
+describe('decide - preflop ranges respond to looseness', () => {
+  const hole = parseCards('Qs Ts') as [Card, Card]; // decent suited broadway
+
+  function notFoldCount(vpip: number): number {
+    const person: Personality = { ...tag, vpip, pfr: 0.5 };
+    let plays = 0;
+    for (let s = 0; s < 24; s++) {
+      const d = decide({
+        personality: person,
+        difficulty: 'medium',
+        ctx: ctx({ hole, toCall: 6, potBefore: 9, positionFactor: 0.5 }),
+        rng: seeded(s + 200),
+      });
+      if (d.action !== 'fold') plays++;
+    }
+    return plays;
+  }
+
+  it('a loose player plays a marginal hand more than a tight player', () => {
+    const loose = notFoldCount(0.7);
+    const tight = notFoldCount(0.1);
+    expect(loose).toBeGreaterThan(tight);
+  });
+});
+
 describe('generatePersonality', () => {
   it('easy personalities have no position awareness and low bluff', () => {
     for (let s = 0; s < 6; s++) {
