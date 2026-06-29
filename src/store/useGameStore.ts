@@ -7,7 +7,7 @@ import { generatePersonality, describePersonality } from '../ai/personality';
 import { decide } from '../ai/decision';
 import { updateHeroProfile, emptyHeroProfile } from '../ai/profile';
 import type { DecisionContext, HeroProfile } from '../ai/types';
-import { computeHeroAnalysis, type HeroAnalysis } from '../utils/analysis';
+import { computeHeroAnalysis, computeFoldOutcome, type HeroAnalysis } from '../utils/analysis';
 import { sound, setMuted } from '../utils/sound';
 import {
   type Settings,
@@ -414,6 +414,18 @@ function finalize(set: SetFn, get: GetFn): void {
     return { id, name: seat.name, hole: gp.hole };
   });
 
+  // If the hero folded, analyse how the folded hand would have fared at showdown.
+  const foldOutcome = hero.folded
+    ? computeFoldOutcome({
+        heroHole: hero.hole,
+        board: game.board,
+        deck: game.deck,
+        opponents: game.players
+          .filter((p) => !p.isHero && !p.sittingOut && p.hole.length === 2)
+          .map((p) => ({ name: state.seats.find((s) => s.id === p.id)?.name ?? `Seat${p.id}`, hole: p.hole })),
+      })
+    : null;
+
   const entry: HandHistoryEntry = {
     handNumber: game.handNumber,
     heroHole: hero.hole,
@@ -426,6 +438,7 @@ function finalize(set: SetFn, get: GetFn): void {
     potTotal,
     seatNames: Object.fromEntries(state.seats.map((s) => [s.id, s.name])),
     winners,
+    foldOutcome,
   };
 
   const resultText = buildResultText(game, hero.id, heroDelta);
@@ -437,16 +450,12 @@ function finalize(set: SetFn, get: GetFn): void {
 
   const history = [...state.history, entry];
   // Normally we stop on the final board so the player can review the hand (the
-  // next hand starts only when they click "下一手"). But if the hero folded
-  // preflop there is nothing to review, so auto-advance quickly.
+  // next hand starts only when they click "下一手"). Even after a preflop fold we
+  // pause here so the player can study the final board and the folded-hand
+  // outcome analysis; the remaining AI action was merely fast-forwarded.
   set({ seats, seatNet, stats, heroProfile, opponentStats, history, handOver: true, thinkingId: null, lastResultText: resultText });
 
   persistNow({ ...get(), stats, heroProfile, history } as GameStore);
-
-  if (state.heroFoldedPreflop) {
-    const delay = state.settings.fastMode ? 250 : 550;
-    nextHandTimer = setTimeout(() => get().startNextHand(), delay);
-  }
 }
 
 function buildResultText(game: GameState, heroId: number, heroDelta: number): string {

@@ -2,6 +2,7 @@ import type { Card } from '../engine/types';
 import type { ActionRecord, Difficulty } from '../engine/gameTypes';
 import type { Payout } from '../engine/sidePots';
 import type { Personality, HeroProfile } from '../ai/types';
+import type { FoldOutcome } from '../utils/analysis';
 
 export interface Settings {
   seatCount: number;
@@ -78,6 +79,8 @@ export interface HandHistoryEntry {
   potTotal: number;
   seatNames: Record<number, string>;
   winners: number[];
+  /** When the hero folded: how the folded hand would have fared at showdown. */
+  foldOutcome?: FoldOutcome | null;
 }
 
 /** Per-opponent observed stats for the HUD (table-lifetime). */
