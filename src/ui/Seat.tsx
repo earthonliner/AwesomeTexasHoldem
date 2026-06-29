@@ -1,7 +1,7 @@
 import type { PlayerState } from '../engine/gameTypes';
 import type { OpponentStat } from '../store/types';
 import { PlayingCard } from './PlayingCard';
-import { formatBB } from '../utils/format';
+import { formatBB, formatSigned } from '../utils/format';
 
 interface Props {
   player: PlayerState;
@@ -12,6 +12,8 @@ interface Props {
   showHud: boolean;
   hudStat?: OpponentStat;
   positionLabel?: string;
+  /** Table-lifetime net profit/loss (chips), independent of rebuys. */
+  net?: number;
 }
 
 function statusBadge(player: PlayerState): { text: string; cls: string } | null {
@@ -25,7 +27,7 @@ function statusBadge(player: PlayerState): { text: string; cls: string } | null 
   return null;
 }
 
-export function Seat({ player, isButton, isActive, isThinking, revealed, showHud, hudStat, positionLabel }: Props) {
+export function Seat({ player, isButton, isActive, isThinking, revealed, showHud, hudStat, positionLabel, net }: Props) {
   const badge = statusBadge(player);
   const dimmed = player.folded || player.sittingOut;
   const showCards = player.isHero || revealed;
@@ -55,6 +57,14 @@ export function Seat({ player, isButton, isActive, isThinking, revealed, showHud
           <span className="truncate">{player.name}</span>
         </div>
         <div className="font-mono text-sm text-yellow-300">{formatBB(player.stack)}</div>
+        {net !== undefined && (
+          <div
+            className={`text-[10px] font-mono ${net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-slate-500'}`}
+            title="本桌历史盈亏（不含补码）"
+          >
+            盈亏 {formatSigned(net)}
+          </div>
+        )}
         {isThinking && <div className="text-xs text-sky-300">思考中…</div>}
       </div>
 

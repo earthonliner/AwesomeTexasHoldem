@@ -87,6 +87,7 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
     handOver,
     heroFoldedPreflop,
     opponentStats,
+    seatNet,
     history,
     lastResultText,
     heroAct,
@@ -154,6 +155,7 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
             opponentStats={opponentStats}
             resultText={lastResultText}
             handOver={handOver}
+            seatNet={seatNet}
           />
 
           {heroBusted ? (
