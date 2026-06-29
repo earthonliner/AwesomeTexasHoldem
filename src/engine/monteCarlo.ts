@@ -146,22 +146,32 @@ export interface RangeEquityOptions {
    * equity than a naive "vs two random cards" estimate suggests.
    */
   rangeFraction: number;
+  /**
+   * Fraction (0..1) of the opponent's *betting* range that is a bluff (a weak /
+   * busted hand). Real bettors are polarized: strong value hands AND bluffs. With
+   * `bluffShare > 0` a portion of the modelled opponents are drawn from the weak
+   * tail instead of the value top, so a bluff-catcher gets realistic equity
+   * (it beats the bluffs) instead of ~0% against a value-only range.
+   */
+  bluffShare?: number;
 }
 
 export interface RangeEquityResult extends EquityResult {
-  /** Number of two-card combos in the assumed opponent range. */
+  /** Number of two-card combos in the assumed value range. */
   rangeCombos: number;
 }
 
 /**
  * Equity vs an estimated opponent range. Opponents are sampled from the top
  * `rangeFraction` of hands ranked by their current strength on the board
- * (pre-flop: ranked by a pre-flop strength heuristic). This corrects the
- * over-optimism of "vs random" equity on the turn and river.
+ * (pre-flop: ranked by a pre-flop strength heuristic). When `bluffShare > 0` the
+ * range is polarized: that fraction of opponents instead holds a weak/bluff hand
+ * from the bottom of the ranking — modelling that bettors also bluff.
  */
 export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResult {
   const { heroCards, board = [], opponents, iterations = 1500, rng = defaultRng } = opts;
   const rangeFraction = Math.min(1, Math.max(0.02, opts.rangeFraction));
+  const bluffShare = Math.min(0.9, Math.max(0, opts.bluffShare ?? 0));
 
   const known = [...heroCards, ...board];
   const remaining = removeKnown(makeDeck(), known);
@@ -178,11 +188,18 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   }
   combos.sort((x, y) => y.score - x.score);
 
-  // Keep at least enough combos to seat every opponent comfortably.
+  // Value range: the strongest `rangeFraction` of combos.
   const floor = Math.min(combos.length, Math.max(opponents * 6, 12));
   const wanted = Math.round(rangeFraction * combos.length);
-  const allowedCount = Math.min(combos.length, Math.max(floor, wanted));
-  const allowed = combos.slice(0, allowedCount).map((c) => c.cards);
+  const valueCount = Math.min(combos.length, Math.max(floor, wanted));
+  const valuePool = combos.slice(0, valueCount).map((c) => c.cards);
+
+  // Bluff range: the weakest combos (busted draws / air) the opponent might bet.
+  let bluffPool: [Card, Card][] = [];
+  if (bluffShare > 0) {
+    const bluffCount = Math.min(combos.length, Math.max(opponents * 6, Math.round(0.4 * combos.length)));
+    bluffPool = combos.slice(combos.length - bluffCount).map((c) => c.cards);
+  }
 
   const needBoard = 5 - board.length;
   const knownIds = known.map(cardId);
@@ -192,34 +209,33 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   let losses = 0;
   let equitySum = 0;
 
+  const drawFrom = (pool: [Card, Card][], usedIds: Set<number>): [Card, Card] => {
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const pick = pool[Math.floor(rng() * pool.length)];
+      const id1 = cardId(pick[0]);
+      const id2 = cardId(pick[1]);
+      if (!usedIds.has(id1) && !usedIds.has(id2)) {
+        usedIds.add(id1);
+        usedIds.add(id2);
+        return pick;
+      }
+    }
+    // Fallback: any two unused cards (avoid dropping iterations on collisions).
+    const free = remaining.filter((c) => !usedIds.has(cardId(c)));
+    const a = free[Math.floor(rng() * free.length)];
+    const b = free.filter((c) => cardId(c) !== cardId(a))[Math.floor(rng() * (free.length - 1))];
+    usedIds.add(cardId(a));
+    usedIds.add(cardId(b));
+    return [a, b];
+  };
+
   for (let iter = 0; iter < iterations; iter++) {
     const usedIds = new Set<number>(knownIds);
     const oppHands: [Card, Card][] = [];
 
     for (let o = 0; o < opponents; o++) {
-      let placed: [Card, Card] | null = null;
-      for (let attempt = 0; attempt < 16; attempt++) {
-        const pick = allowed[Math.floor(rng() * allowed.length)];
-        const id1 = cardId(pick[0]);
-        const id2 = cardId(pick[1]);
-        if (!usedIds.has(id1) && !usedIds.has(id2)) {
-          usedIds.add(id1);
-          usedIds.add(id2);
-          placed = pick;
-          break;
-        }
-      }
-      if (!placed) {
-        // Fallback: any two unused cards (keeps the simulation unbiased rather
-        // than dropping iterations when the range is depleted by collisions).
-        const pool = remaining.filter((c) => !usedIds.has(cardId(c)));
-        const a = pool[Math.floor(rng() * pool.length)];
-        const b = pool.filter((c) => cardId(c) !== cardId(a))[Math.floor(rng() * (pool.length - 1))];
-        usedIds.add(cardId(a));
-        usedIds.add(cardId(b));
-        placed = [a, b];
-      }
-      oppHands.push(placed);
+      const useBluff = bluffShare > 0 && bluffPool.length > 0 && rng() < bluffShare;
+      oppHands.push(drawFrom(useBluff ? bluffPool : valuePool, usedIds));
     }
 
     const pool = remaining.filter((c) => !usedIds.has(cardId(c)));
@@ -254,8 +270,25 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     lose: losses / iterations,
     equity: equitySum / iterations,
     iterations,
-    rangeCombos: allowedCount,
+    rangeCombos: valueCount,
   };
+}
+
+/**
+ * Estimate how much of an opponent's *betting* range is bluffs, for the hero's
+ * analysis. Heads-up bettors are quite polarized (≈ a third bluffs); multiway
+ * betting is far more value-heavy, so bluffs shrink with more opponents. Wetter
+ * boards (more busted draws) carry slightly more bluffs.
+ */
+export function estimateBluffShare(args: {
+  facingBet: boolean;
+  liveOpponents: number;
+  wetness: number;
+}): number {
+  if (!args.facingBet) return 0;
+  const base = 0.34 + args.wetness * 0.12;
+  const multiwayDamp = Math.sqrt(Math.max(1, args.liveOpponents));
+  return Math.min(0.5, Math.max(0.08, base / multiwayDamp));
 }
 
 /**

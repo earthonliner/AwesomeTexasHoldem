@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateEquity, estimateEquityVsRange, estimateRangeFraction } from './monteCarlo';
+import { estimateEquity, estimateEquityVsRange, estimateRangeFraction, estimateBluffShare } from './monteCarlo';
 import { parseCards } from './deck';
 import type { Card } from './types';
 
@@ -100,6 +100,41 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
       rangeFraction: 0.1,
     });
     expect(r.win + r.tie).toBe(1);
+  });
+
+  it('a bluff-catcher gets near 0% vs a value-only range but real equity vs a polarized range', () => {
+    // Hero holds a modest pair (a bluff-catcher) on a scary river.
+    const heroCards = hero('9h 9c');
+    const board = parseCards('Ah Kd 7s 4c 2d');
+    const valueOnly = estimateEquityVsRange({
+      heroCards,
+      board,
+      opponents: 1,
+      iterations: 4000,
+      rng: seeded(21),
+      rangeFraction: 0.18,
+    });
+    const polarized = estimateEquityVsRange({
+      heroCards,
+      board,
+      opponents: 1,
+      iterations: 4000,
+      rng: seeded(21),
+      rangeFraction: 0.18,
+      bluffShare: 0.35,
+    });
+    // Against value only, the pair is crushed; with bluffs in the range it can
+    // beat the bluffs, so equity rises meaningfully (no longer ~0%).
+    expect(valueOnly.equity).toBeLessThan(0.15);
+    expect(polarized.equity).toBeGreaterThan(valueOnly.equity + 0.15);
+  });
+
+  it('estimateBluffShare is 0 without a bet and positive heads-up facing a bet', () => {
+    expect(estimateBluffShare({ facingBet: false, liveOpponents: 1, wetness: 0.5 })).toBe(0);
+    const hu = estimateBluffShare({ facingBet: true, liveOpponents: 1, wetness: 0.3 });
+    const multi = estimateBluffShare({ facingBet: true, liveOpponents: 4, wetness: 0.3 });
+    expect(hu).toBeGreaterThan(0.2);
+    expect(multi).toBeLessThan(hu); // bluffs shrink multiway
   });
 
   it('chooses a tighter range when facing a large bet', () => {
