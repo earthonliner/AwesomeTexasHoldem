@@ -62,6 +62,7 @@ export class Room {
   private buttonSeatId = 0;
   private handOver = false;
   private lastResultText = '';
+  private waitingForPlayers = false; // paused between hands until enough players
   private turnDeadline: number | null = null;
   private handStartStacks: Record<number, number> = {};
   /** clientIds of humans who clicked "下一手" during the between-hand pause. */
@@ -275,9 +276,16 @@ export class Room {
     }
 
     if (this.activeSeats().length < 2) {
-      this.toLobby();
+      // Not enough players to deal (e.g. someone busted) — pause and wait for a
+      // rebuy or a new player instead of kicking everyone back to the lobby.
+      this.clearTimers();
+      this.handOver = true;
+      this.waitingForPlayers = true;
+      this.turnDeadline = null;
+      this.broadcast();
       return;
     }
+    this.waitingForPlayers = false;
 
     if (!first) this.buttonSeatId = this.nextActiveSeatId(this.buttonSeatId);
 
@@ -443,6 +451,10 @@ export class Room {
     if (seat && seat.stack <= 0) {
       seat.stack = this.config.startingStackBB * BB_CHIPS;
       seat.sittingOut = false;
+      // If the table was paused waiting for players, this rebuy may resume it.
+      if (this.phase === 'playing' && this.waitingForPlayers && this.activeSeats().length >= 2) {
+        this.startHand(false);
+      }
     }
   }
 
@@ -528,6 +540,7 @@ export class Room {
       base.readySeatIds = this.seats
         .filter((s) => s.clientId !== undefined && this.readyIds.has(s.clientId))
         .map((s) => s.seatId);
+      if (this.waitingForPlayers) base.message = '人数不足，等待玩家补码或加入…';
     }
     return base;
   }
