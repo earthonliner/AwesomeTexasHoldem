@@ -17,10 +17,19 @@ function TurnTimer({ deadline }: { deadline: number }) {
 }
 
 export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () => void }) {
-  const { act, rebuy, backToLobby } = useOnlineStore();
+  const { act, rebuy, ready, backToLobby } = useOnlineStore();
   const game = view.game!;
   const youSeatId = view.youSeatId;
   const isYourTurn = view.toActSeatId === youSeatId && youSeatId !== null && !view.handOver;
+
+  const readySet = new Set(view.readySeatIds ?? []);
+  const youReady = youSeatId !== null && readySet.has(youSeatId);
+  // Active human seats we are waiting on (connected, with chips).
+  const waitingNames = view.seats
+    .filter((s) => s.kind === 'human' && s.connected && s.stack > 0 && !readySet.has(s.seatId))
+    .map((s) => s.name);
+  const youAreActiveHuman =
+    youSeatId !== null && view.seats.some((s) => s.seatId === youSeatId && s.kind === 'human' && s.stack > 0);
 
   const youSeat = youSeatId !== null ? game.players[youSeatId] : null;
   const busted = !!youSeat && youSeat.stack <= 0;
@@ -87,16 +96,39 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
             seatNet={seatNet}
           />
 
-          {youSeatId === null ? (
+          {view.handOver ? (
+            <div className="rounded-xl bg-slate-900/80 p-4 ring-1 ring-amber-600/30">
+              <div className="mb-2 text-center text-sm font-semibold text-yellow-200">
+                {view.lastResultText || '本手结束'}
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                {busted && (
+                  <button onClick={rebuy} className="rounded-lg bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600">
+                    补码 (Rebuy)
+                  </button>
+                )}
+                {youAreActiveHuman && !busted ? (
+                  youReady ? (
+                    <span className="text-sm text-emerald-300">已准备 ✓</span>
+                  ) : (
+                    <button
+                      onClick={ready}
+                      className="rounded-lg bg-gradient-to-r from-emerald-600 to-amber-600 px-6 py-2 font-bold text-white shadow hover:brightness-110 active:scale-95"
+                    >
+                      下一手 →
+                    </button>
+                  )
+                ) : null}
+              </div>
+              <div className="mt-2 text-center text-xs text-slate-400">
+                {waitingNames.length > 0
+                  ? `等待 ${waitingNames.join('、')} 点击「下一手」…`
+                  : '全部就绪，即将开始下一手…'}
+              </div>
+            </div>
+          ) : youSeatId === null ? (
             <div className="rounded-xl bg-slate-900/60 p-4 text-center text-slate-400">
               你正在观战。可在「返回大厅」后选择一个空座加入。
-            </div>
-          ) : busted && view.handOver ? (
-            <div className="flex items-center justify-between rounded-xl bg-slate-900/80 p-4">
-              <span className="text-rose-300">你的筹码已输光。</span>
-              <button onClick={rebuy} className="rounded-lg bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600">
-                补码 (Rebuy)
-              </button>
             </div>
           ) : (
             <ActionBar game={game} onAct={act} />

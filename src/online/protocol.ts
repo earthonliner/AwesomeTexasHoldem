@@ -39,6 +39,8 @@ export interface RoomView {
   lastResultText?: string;
   /** Map of seatId -> kind, so the client can label AI/human/empty during play. */
   seatKinds?: Record<number, SeatKind>;
+  /** Seat ids of human players who have clicked "下一手" during the pause. */
+  readySeatIds?: number[];
   message?: string;
 }
 
@@ -53,6 +55,7 @@ export type ClientMsg =
   | { t: 'start' }
   | { t: 'action'; action: PlayerAction }
   | { t: 'rebuy' }
+  | { t: 'ready' }
   | { t: 'backToLobby' };
 
 // ---- Server -> Client ----
