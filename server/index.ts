@@ -71,10 +71,20 @@ wss.on('connection', (ws: WebSocket) => {
     } catch {
       return;
     }
-    const welcome = room.handle(clientId, msg);
-    if (welcome) {
-      ws.send(JSON.stringify({ t: 'welcome', youId: welcome.youId, token: welcome.token }));
-      ws.send(JSON.stringify({ t: 'view', view: room.viewFor(clientId) }));
+    try {
+      const welcome = room.handle(clientId, msg);
+      if (welcome) {
+        ws.send(JSON.stringify({ t: 'welcome', youId: welcome.youId, token: welcome.token }));
+        ws.send(JSON.stringify({ t: 'view', view: room.viewFor(clientId) }));
+      }
+    } catch (err) {
+      // Never let a handler error drop the player's connection.
+      console.error('handler error:', err);
+      try {
+        ws.send(JSON.stringify({ t: 'error', message: '操作出错，请重试。' }));
+      } catch {
+        /* ignore */
+      }
     }
   });
 

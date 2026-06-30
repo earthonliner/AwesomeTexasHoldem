@@ -32,7 +32,9 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
     youSeatId !== null && view.seats.some((s) => s.seatId === youSeatId && s.kind === 'human' && s.stack > 0);
 
   const youSeat = youSeatId !== null ? game.players[youSeatId] : null;
-  const busted = !!youSeat && youSeat.stack <= 0;
+  // Out of chips and not contesting a live hand (so an all-in mid-hand isn't
+  // treated as busted while it could still win).
+  const busted = !!youSeat && youSeat.stack <= 0 && (!!view.handOver || youSeat.sittingOut);
 
   const analysis = useMemo(
     () => (isYourTurn ? computeHeroAnalysis(game, 800) : null),
@@ -96,7 +98,23 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
             seatNet={seatNet}
           />
 
-          {view.handOver ? (
+          {busted ? (
+            <div className="rounded-xl bg-slate-900/80 p-4 ring-1 ring-rose-600/40">
+              {view.lastResultText && (
+                <div className="mb-2 text-center text-sm font-semibold text-yellow-200">{view.lastResultText}</div>
+              )}
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                <span className="text-rose-300">你的筹码已输光（累计盈亏仍照常统计）。</span>
+                <button
+                  onClick={rebuy}
+                  className="rounded-lg bg-gradient-to-r from-emerald-600 to-amber-600 px-5 py-2 font-bold text-white shadow hover:brightness-110 active:scale-95"
+                >
+                  补码继续 (Rebuy)
+                </button>
+              </div>
+              {view.message && <div className="mt-2 text-center text-xs text-slate-400">{view.message}</div>}
+            </div>
+          ) : view.handOver ? (
             <div className="rounded-xl bg-slate-900/80 p-4 ring-1 ring-amber-600/30">
               <div className="mb-2 text-center text-sm font-semibold text-yellow-200">
                 {view.lastResultText || '本手结束'}
@@ -121,9 +139,11 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
                 ) : null}
               </div>
               <div className="mt-2 text-center text-xs text-slate-400">
-                {waitingNames.length > 0
-                  ? `等待 ${waitingNames.join('、')} 点击「下一手」…`
-                  : '全部就绪，即将开始下一手…'}
+                {view.message
+                  ? view.message
+                  : waitingNames.length > 0
+                    ? `等待 ${waitingNames.join('、')} 点击「下一手」…`
+                    : '全部就绪，即将开始下一手…'}
               </div>
             </div>
           ) : youSeatId === null ? (
