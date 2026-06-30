@@ -26,7 +26,12 @@ let started = false;
 function autoPlay(view: RoomView, send: (m: ClientMsg) => void) {
   if (view.phase !== 'playing' || !view.game) return;
   maxHand = Math.max(maxHand, view.game.handNumber);
-  if (view.toActSeatId !== view.youSeatId || view.handOver) return;
+  // Between hands, ready up so the next hand can begin.
+  if (view.handOver) {
+    if (view.youSeatId !== null) send({ t: 'ready' });
+    return;
+  }
+  if (view.toActSeatId !== view.youSeatId) return;
   const hi = view.game.players.findIndex((p) => p.isHero);
   if (hi < 0) return;
   const legal = getLegalActions(view.game, hi);

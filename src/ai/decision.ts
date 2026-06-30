@@ -21,24 +21,53 @@ export interface DecideOptions {
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
 
-function chooseRaiseTarget(
+/** True when the stack is short relative to the pot — a natural commit spot. */
+function isShortStack(ctx: DecisionContext): boolean {
+  const potAfterCall = ctx.potBefore + ctx.toCall;
+  return ctx.stack <= potAfterCall * 1.25;
+}
+
+/**
+ * Size a bet/raise as a fraction of the pot. Humans rarely jam all-in for many
+ * times the pot, so we only convert to an all-in when it is a genuine commit
+ * spot (`allowAllIn`): a short stack, or near-committed sizing. Otherwise the
+ * size is capped so chips are left behind instead of shoving.
+ */
+function sizeRaise(
   ctx: DecisionContext,
-  sizeFraction: number,
+  fraction: number,
   rng: Rng,
+  allowAllIn: boolean,
 ): { amount: number; allIn: boolean } {
   const currentLevel = ctx.streetCommitted + ctx.toCall;
   const potAfterCall = ctx.potBefore + ctx.toCall;
   const jitter = 0.9 + rng() * 0.2;
-  const raiseBy = Math.max(ctx.bigBlind, Math.round(potAfterCall * sizeFraction * jitter));
-  let target = currentLevel + raiseBy;
+  const raiseBy = Math.max(ctx.bigBlind, Math.round(potAfterCall * fraction * jitter));
+  let target = Math.max(currentLevel + raiseBy, ctx.minRaiseTo);
 
-  target = Math.max(target, ctx.minRaiseTo);
-  // Commit rather than leave an awkward tiny stack behind.
-  if (target >= ctx.maxRaiseTo * 0.85) {
+  if (target >= ctx.maxRaiseTo) return { amount: ctx.maxRaiseTo, allIn: true };
+  if (allowAllIn && target >= ctx.maxRaiseTo * 0.85) {
+    // Already nearly all-in: commit rather than leave dust behind.
     return { amount: ctx.maxRaiseTo, allIn: true };
+  }
+  if (!allowAllIn) {
+    // Never shove off a deep stack on a normal bet/bluff; cap below all-in.
+    target = Math.min(target, Math.round(ctx.maxRaiseTo * 0.7));
+    target = Math.max(target, ctx.minRaiseTo);
   }
   target = Math.min(target, ctx.maxRaiseTo);
   return { amount: target, allIn: target >= ctx.maxRaiseTo };
+}
+
+/**
+ * A single bet-sizing distribution used for BOTH value bets and bluffs, so a
+ * bluff is not betrayed by an unusual size. Mostly half-to-three-quarter pot,
+ * a touch larger on wet boards, with the occasional (rare) overbet.
+ */
+function pickBetSize(aggression: number, wet: number, rng: Rng): number {
+  let f = 0.45 + aggression * 0.2 + wet * 0.12;
+  if (rng() < 0.06) f += 0.45; // rare overbet for balance
+  return Math.min(1.2, Math.max(0.33, f + (rng() - 0.5) * 0.1));
 }
 
 function thinkTime(rng: Rng, tough: boolean): number {
@@ -127,12 +156,15 @@ function decidePreflop(
   const raiseThresh = 1 - raiseRange;
 
   const reason = [`pct=${pct.toFixed(2)}`, `playR=${playRange.toFixed(2)}`, `raiseR=${raiseRange.toFixed(2)}`];
-  const openSize = (canCheck ? 0.85 : 1.05) + rng() * 0.45;
+  const openSize = (canCheck ? 0.85 : 1.05) + rng() * 0.4;
+  // Only ever shove pre-flop when genuinely short-stacked; otherwise keep raises
+  // to a normal size (humans don't open-jam 100bb deep).
+  const allowAllIn = isShortStack(ctx);
 
   // Unraised pot (big-blind option or limped to us): raise strong, else check.
   if (canCheck) {
     if (strength >= raiseThresh && rng() < 0.55 + p.pfr * 0.35) {
-      const { amount, allIn } = chooseRaiseTarget(ctx, openSize, rng);
+      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'pf-iso']);
     }
     return mk('check', 0, rng, false, [...reason, 'pf-check']);
@@ -141,7 +173,7 @@ function decidePreflop(
   // Facing a bet/raise.
   if (strength >= raiseThresh) {
     if (rng() < 0.5 + p.pfr * 0.4) {
-      const { amount, allIn } = chooseRaiseTarget(ctx, openSize, rng);
+      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'pf-raise'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'pf-trap-call'], true);
@@ -149,8 +181,8 @@ function decidePreflop(
 
   if (strength >= playThresh) {
     // Aggressive players occasionally turn a playable hand into a light 3-bet.
-    if (p.aggression > 0.6 && positionFactor > 0.6 && rng() < p.bluff * 0.5) {
-      const { amount, allIn } = chooseRaiseTarget(ctx, openSize, rng);
+    if (p.aggression > 0.6 && positionFactor > 0.6 && rng() < p.bluff * 0.4) {
+      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn);
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'pf-light-3bet'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'pf-call'], true);
@@ -159,11 +191,11 @@ function decidePreflop(
   // Occasional pure steal from late position even with trash (not on easy).
   if (
     difficulty !== 'easy' &&
-    positionFactor > 0.75 &&
+    positionFactor > 0.78 &&
     toCall <= bigBlind * 1.5 &&
-    rng() < p.bluff * 0.35 + exploit.stealBonus
+    rng() < p.bluff * 0.25 + exploit.stealBonus
   ) {
-    const { amount, allIn } = chooseRaiseTarget(ctx, openSize, rng);
+    const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn);
     return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'pf-steal'], true);
   }
 
@@ -207,10 +239,13 @@ function decidePostflop(
 
   let bluffFreq = dynamicBluffFrequency(p, ctx) * exploit.bluffMult;
   if (difficulty === 'easy') bluffFreq *= 0.4;
-  bluffFreq = clamp(bluffFreq + exploit.stealBonus * 0.5, 0, 0.85);
+  // Slightly tame bluffing so AIs don't fire too transparently/often.
+  bluffFreq = clamp(bluffFreq * 0.85 + exploit.stealBonus * 0.4, 0, 0.7);
 
-  const valueSize = clamp(0.5 + p.aggression * 0.25 + wet * 0.15 + (rng() < 0.08 ? 0.6 : 0), 0.3, 1.8);
-  const bluffSize = clamp(0.55 + p.aggression * 0.25 + wet * 0.2, 0.4, 1.4);
+  const short = isShortStack(ctx);
+  // Value and bluff share one sizing distribution (a bluff isn't readable by size).
+  const betSize = pickBetSize(p.aggression, wet, rng);
+  const strongValue = eq >= 0.9;
 
   const reason = [`eq=${eq.toFixed(2)}`, `vt=${valueThresh.toFixed(2)}`, `bf=${bluffFreq.toFixed(2)}`];
 
@@ -220,13 +255,14 @@ function decidePostflop(
       // Sometimes slow-play a monster to disguise the hand.
       const slowPlay = eq > 0.85 && rng() < 0.3 * (1 - p.aggression);
       if (!slowPlay && rng() < 0.72 + p.aggression * 0.23) {
-        const { amount, allIn } = chooseRaiseTarget(ctx, valueSize, rng);
+        const { amount, allIn } = sizeRaise(ctx, betSize, rng, short || strongValue);
         return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-bet']);
       }
       return mk('check', 0, rng, false, [...reason, 'slowplay-check']);
     }
     if (rng() < bluffFreq) {
-      const { amount, allIn } = chooseRaiseTarget(ctx, bluffSize, rng);
+      // Bluffs never shove off a deep stack (only when already short).
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, draw ? 'semi-bluff' : 'bluff-bet']);
     }
     return mk('check', 0, rng, false, [...reason, 'check']);
@@ -250,23 +286,23 @@ function decidePostflop(
   if (rng() < contProb) {
     // Continue: choose raise vs call with mixed frequencies.
     if (eq >= valueThresh + 0.06 && rng() < 0.45 + p.aggression * 0.4) {
-      const { amount, allIn } = chooseRaiseTarget(ctx, valueSize, rng);
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short || strongValue);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-raise'], true);
     }
-    if (draw && rng() < bluffFreq * 0.7) {
-      const { amount, allIn } = chooseRaiseTarget(ctx, bluffSize, rng);
+    if (draw && rng() < bluffFreq * 0.6) {
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'semi-raise'], true);
     }
     if (eq >= valueThresh && rng() < p.aggression * 0.3) {
-      const { amount, allIn } = chooseRaiseTarget(ctx, valueSize, rng);
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short || strongValue);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'thin-raise'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'odds-call'], true);
   }
 
-  // Fold zone: occasionally turn it into a bluff-raise when cheap.
-  if (rng() < bluffFreq * 0.4 && toCall <= potBefore * 0.5) {
-    const { amount, allIn } = chooseRaiseTarget(ctx, bluffSize, rng);
+  // Fold zone: occasionally turn it into a bluff-raise when cheap (never a deep shove).
+  if (rng() < bluffFreq * 0.3 && toCall <= potBefore * 0.5) {
+    const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
     return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'bluff-raise'], true);
   }
 

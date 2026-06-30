@@ -25,7 +25,8 @@ import {
 const AI_NAMES = ['Ava', 'Boris', 'Carmen', 'Dmitri', 'Elena', 'Frank', 'Gina', 'Hank'];
 const TURN_MS = 30_000; // human decision time limit
 const DISCONNECT_ACT_MS = 1_500; // grace before auto-acting for a disconnected human
-const HAND_REVIEW_MS = 4_500; // pause between hands so everyone sees the result
+const HAND_REVIEW_MS = 4_500; // auto-advance delay when no human needs to ready up
+const READY_TIMEOUT_MS = 120_000; // safety net so an AFK player can't stall forever
 
 interface ServerSeat {
   seatId: number;
@@ -63,6 +64,8 @@ export class Room {
   private lastResultText = '';
   private turnDeadline: number | null = null;
   private handStartStacks: Record<number, number> = {};
+  /** clientIds of humans who clicked "下一手" during the between-hand pause. */
+  private readyIds = new Set<string>();
 
   private actionTimer: ReturnType<typeof setTimeout> | null = null;
   private nextHandTimer: ReturnType<typeof setTimeout> | null = null;
@@ -87,7 +90,10 @@ export class Room {
     }
     this.connections.delete(clientId);
     this.pendingNames.delete(clientId);
+    this.readyIds.delete(clientId);
     if (this.hostId === clientId) this.reassignHost();
+    // A player leaving the table during the pause may unblock the next hand.
+    if (this.phase === 'playing' && this.handOver) this.checkAllReady();
     this.broadcast();
   }
 
@@ -136,6 +142,9 @@ export class Room {
         break;
       case 'rebuy':
         this.onRebuy(clientId);
+        break;
+      case 'ready':
+        this.onReady(clientId);
         break;
       case 'backToLobby':
         if (clientId === this.hostId) this.toLobby();
@@ -255,6 +264,7 @@ export class Room {
 
   private startHand(first = false): void {
     this.clearTimers();
+    this.readyIds.clear();
 
     // Refresh AI personalities only once (table lifetime); rebuy busted seats.
     for (const s of this.seats) {
@@ -387,11 +397,37 @@ export class Room {
     this.handOver = true;
     this.turnDeadline = null;
     this.lastResultText = this.buildResultText(game);
+    this.readyIds.clear();
 
-    const delay = HAND_REVIEW_MS;
+    // The next hand starts only once every active human clicks "下一手". If no
+    // human needs to ready up (all-AI table), auto-advance after a short pause.
+    // A long safety timeout prevents an AFK player from stalling forever.
+    const humansToWaitFor = this.requiredReadySeats();
+    const delay = humansToWaitFor.length === 0 ? HAND_REVIEW_MS : READY_TIMEOUT_MS;
     this.nextHandTimer = setTimeout(() => {
       if (this.phase === 'playing') this.startHand(false);
     }, delay);
+  }
+
+  /** Active human seats whose "ready" we wait for between hands. */
+  private requiredReadySeats(): ServerSeat[] {
+    return this.seats.filter((s) => s.kind === 'human' && s.connected && s.stack > 0 && !s.sittingOut);
+  }
+
+  private onReady(clientId: string): void {
+    if (this.phase !== 'playing' || !this.handOver) return;
+    const seat = this.seats.find((s) => s.clientId === clientId && s.kind === 'human');
+    if (!seat) return;
+    this.readyIds.add(clientId);
+    this.checkAllReady();
+  }
+
+  private checkAllReady(): void {
+    if (this.phase !== 'playing' || !this.handOver) return;
+    const required = this.requiredReadySeats();
+    if (required.length === 0) return; // handled by the auto-advance timer
+    const allReady = required.every((s) => s.clientId !== undefined && this.readyIds.has(s.clientId));
+    if (allReady) this.startHand(false);
   }
 
   private syncStacks(): void {
@@ -489,6 +525,9 @@ export class Room {
       base.turnDeadline = this.turnDeadline;
       base.handOver = this.handOver;
       base.lastResultText = this.lastResultText;
+      base.readySeatIds = this.seats
+        .filter((s) => s.clientId !== undefined && this.readyIds.has(s.clientId))
+        .map((s) => s.seatId);
     }
     return base;
   }

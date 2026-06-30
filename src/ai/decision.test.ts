@@ -192,6 +192,66 @@ describe('decide - preflop ranges respond to looseness', () => {
   });
 });
 
+describe('AI sizing realism (all-in discipline)', () => {
+  const hole = parseCards('As Ad') as [Card, Card];
+  const board = parseCards('Kh 7c 2d');
+  const aggressive: Personality = { ...tag, aggression: 0.9, bluff: 0.4 };
+
+  it('rarely shoves all-in with a deep stack', () => {
+    let allins = 0;
+    const n = 30;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: aggressive,
+        difficulty: 'medium',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: false,
+          toCall: 10,
+          potBefore: 20,
+          stack: 400,
+          streetCommitted: 0,
+          minRaiseTo: 20,
+          maxRaiseTo: 400,
+        }),
+        rng: seeded(s + 300),
+        iterations: 150,
+      });
+      if (d.action === 'allin') allins++;
+    }
+    expect(allins).toBeLessThanOrEqual(2); // deep stacks don't spam jams
+  });
+
+  it('still shoves when short-stacked (low SPR commit)', () => {
+    let allins = 0;
+    const n = 30;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: aggressive,
+        difficulty: 'medium',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: false,
+          toCall: 10,
+          potBefore: 20,
+          stack: 24,
+          streetCommitted: 0,
+          minRaiseTo: 20,
+          maxRaiseTo: 24,
+        }),
+        rng: seeded(s + 400),
+        iterations: 150,
+      });
+      if (d.action === 'allin') allins++;
+    }
+    expect(allins).toBeGreaterThan(0);
+  });
+});
+
 describe('generatePersonality', () => {
   it('easy personalities have no position awareness and low bluff', () => {
     for (let s = 0; s < 6; s++) {

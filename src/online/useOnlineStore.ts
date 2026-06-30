@@ -29,6 +29,7 @@ interface OnlineStore {
   start: () => void;
   act: (action: PlayerAction) => void;
   rebuy: () => void;
+  ready: () => void;
   backToLobby: () => void;
 }
 
@@ -119,5 +120,6 @@ export const useOnlineStore = create<OnlineStore>((set, get) => ({
   start: () => get().send({ t: 'start' }),
   act: (action) => get().send({ t: 'action', action }),
   rebuy: () => get().send({ t: 'rebuy' }),
+  ready: () => get().send({ t: 'ready' }),
   backToLobby: () => get().send({ t: 'backToLobby' }),
 }));
