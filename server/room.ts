@@ -167,7 +167,7 @@ export class Room {
         seat.clientId = clientId;
         seat.connected = true;
         seat.name = safeName;
-        if (this.phase === 'playing') seat.sittingOut = false; // rejoin next hand
+        seat.sittingOut = false; // back in — rejoin next hand (or be dealt in lobby)
         reclaim = token;
       }
     }
@@ -260,7 +260,15 @@ export class Room {
     this.phase = 'lobby';
     this.game = null;
     this.handOver = false;
+    this.waitingForPlayers = false;
     this.turnDeadline = null;
+    this.readyIds.clear();
+    // Reforming the table: free ghost seats left by disconnected players so the
+    // remaining players (and new/AI seats) aren't blocked from starting again.
+    for (const s of this.seats) {
+      if (s.kind === 'human' && !s.connected) this.vacate(s);
+      else s.sittingOut = false;
+    }
   }
 
   private startHand(first = false): void {
