@@ -31,10 +31,14 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
   const youAreActiveHuman =
     youSeatId !== null && view.seats.some((s) => s.seatId === youSeatId && s.kind === 'human' && s.stack > 0);
 
-  const youSeat = youSeatId !== null ? game.players[youSeatId] : null;
-  // Out of chips and not contesting a live hand (so an all-in mid-hand isn't
-  // treated as busted while it could still win).
-  const busted = !!youSeat && youSeat.stack <= 0 && (!!view.handOver || youSeat.sittingOut);
+  const youGame = youSeatId !== null ? game.players[youSeatId] : null;
+  const youSeatView = youSeatId !== null ? view.seats.find((s) => s.seatId === youSeatId) : undefined;
+  // Use the authoritative SEAT stack (reflects rebuys immediately) — not the
+  // in-hand player stack, which lags behind after a mid-hand rebuy.
+  const seatStack = youSeatView?.stack ?? 0;
+  // Still contesting the current hand (e.g. all-in) -> don't offer a rebuy yet.
+  const liveInHand = !view.handOver && !!youGame && !youGame.folded && !youGame.sittingOut;
+  const needRebuy = !!youSeatView && youSeatView.kind === 'human' && seatStack <= 0 && !liveInHand;
 
   const analysis = useMemo(
     () => (isYourTurn ? computeHeroAnalysis(game, 800) : null),
@@ -98,7 +102,7 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
             seatNet={seatNet}
           />
 
-          {busted ? (
+          {needRebuy ? (
             <div className="rounded-xl bg-slate-900/80 p-4 ring-1 ring-rose-600/40">
               {view.lastResultText && (
                 <div className="mb-2 text-center text-sm font-semibold text-yellow-200">{view.lastResultText}</div>
@@ -112,7 +116,9 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
                   补码继续 (Rebuy)
                 </button>
               </div>
-              {view.message && <div className="mt-2 text-center text-xs text-slate-400">{view.message}</div>}
+              <div className="mt-2 text-center text-xs text-slate-400">
+                {view.message ?? '补码后将在下一手加入牌桌。'}
+              </div>
             </div>
           ) : view.handOver ? (
             <div className="rounded-xl bg-slate-900/80 p-4 ring-1 ring-amber-600/30">
@@ -120,12 +126,7 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
                 {view.lastResultText || '本手结束'}
               </div>
               <div className="flex flex-wrap items-center justify-center gap-3">
-                {busted && (
-                  <button onClick={rebuy} className="rounded-lg bg-emerald-700 px-4 py-2 font-semibold hover:bg-emerald-600">
-                    补码 (Rebuy)
-                  </button>
-                )}
-                {youAreActiveHuman && !busted ? (
+                {youAreActiveHuman ? (
                   youReady ? (
                     <span className="text-sm text-emerald-300">已准备 ✓</span>
                   ) : (
@@ -136,7 +137,9 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
                       下一手 →
                     </button>
                   )
-                ) : null}
+                ) : (
+                  <span className="text-sm text-slate-400">观战中…</span>
+                )}
               </div>
               <div className="mt-2 text-center text-xs text-slate-400">
                 {view.message
