@@ -8,7 +8,11 @@ export function Lobby({ view, onExit }: { view: RoomView; onExit: () => void }) 
   const { sit, stand, addAI, removeAI, setConfig, start } = useOnlineStore();
   const isHost = view.isHost;
   const youSeated = view.youSeatId !== null;
-  const activeCount = view.seats.filter((s) => s.kind !== 'empty').length;
+  // Count only seats that can actually be dealt in (matches the server), so the
+  // Start button reflects reality after players disconnect.
+  const activeCount = view.seats.filter(
+    (s) => (s.kind === 'ai' || (s.kind === 'human' && s.connected)) && s.stack > 0,
+  ).length;
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
