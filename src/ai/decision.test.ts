@@ -265,4 +265,44 @@ describe('generatePersonality', () => {
     const p = generatePersonality('hard', seeded(42));
     expect(p.positionAwareness).toBeGreaterThan(0.5);
   });
+
+  it('medium personalities are uniformly balanced (no obvious over-bluffers)', () => {
+    for (let s = 0; s < 25; s++) {
+      const p = generatePersonality('medium', seeded(s + 1));
+      expect(p.bluff).toBeLessThan(0.28); // no wild bluffers
+      expect(p.bluff).toBeGreaterThan(0.05);
+      expect(p.positionAwareness).toBeGreaterThan(0.45); // all reasonably skilled
+    }
+  });
+});
+
+describe('medium AI bluffs in a controlled, hard-to-read way', () => {
+  const hole = parseCards('7s 2d') as [Card, Card]; // air
+  const board = parseCards('9h 8h 6c'); // wet
+
+  function bluffRate(difficulty: 'medium' | 'hard'): number {
+    let bets = 0;
+    const n = 50;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: { ...tag, bluff: 0.25 },
+        difficulty,
+        ctx: ctx({ hole, board, street: 'flop', canCheck: true, toCall: 0, potBefore: 12 }),
+        rng: seeded(s + 700),
+        iterations: 120,
+      });
+      if (d.action !== 'check') bets++;
+    }
+    return bets / n;
+  }
+
+  it('does not over-bluff (bets a weak hand less than half the time) yet still bluffs sometimes', () => {
+    const rate = bluffRate('medium');
+    expect(rate).toBeLessThan(0.5);
+    expect(rate).toBeGreaterThan(0);
+  });
+
+  it('bluffs no more often than hard difficulty in the same spot', () => {
+    expect(bluffRate('medium')).toBeLessThanOrEqual(bluffRate('hard') + 0.05);
+  });
 });
