@@ -60,15 +60,18 @@ export function generatePersonality(difficulty: Difficulty, rng: Rng = defaultRn
   }
 
   if (difficulty === 'medium') {
+    // Solid, believable TAGs. Ranges are deliberately TIGHT so every medium
+    // opponent plays a balanced value/bluff game — no obvious over-bluffers that
+    // are trivial to read. Skill (position awareness) is uniformly decent.
     return {
-      vpip: around(rng, 0.32, 0.1),
-      pfr: around(rng, 0.55, 0.15),
-      aggression: around(rng, 0.55, 0.15),
-      bluff: around(rng, 0.22, 0.08),
-      callDown: around(rng, 0.5, 0.15),
-      positionAwareness: around(rng, 0.6, 0.2),
-      stackReactivity: around(rng, 0.5, 0.2),
-      potReactivity: around(rng, 0.5, 0.2),
+      vpip: around(rng, 0.26, 0.05),
+      pfr: around(rng, 0.7, 0.08),
+      aggression: around(rng, 0.6, 0.07),
+      bluff: around(rng, 0.16, 0.035),
+      callDown: around(rng, 0.5, 0.1),
+      positionAwareness: around(rng, 0.72, 0.1),
+      stackReactivity: around(rng, 0.6, 0.12),
+      potReactivity: around(rng, 0.6, 0.12),
     };
   }
 

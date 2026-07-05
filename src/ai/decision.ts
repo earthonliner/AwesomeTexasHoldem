@@ -237,10 +237,13 @@ function decidePostflop(
   const valueThresh = Math.min(0.82, 0.5 + 0.075 * opp);
   const draw = cardsToCome && eq >= 0.3 && eq < valueThresh;
 
-  let bluffFreq = dynamicBluffFrequency(p, ctx) * exploit.bluffMult;
-  if (difficulty === 'easy') bluffFreq *= 0.4;
-  // Slightly tame bluffing so AIs don't fire too transparently/often.
-  bluffFreq = clamp(bluffFreq * 0.85 + exploit.stealBonus * 0.4, 0, 0.7);
+  // Keep bluffing balanced (believable) rather than spewy. Medium in particular
+  // is capped so no opponent over-bluffs and becomes easy to read; hard leans on
+  // exploits (not raw frequency) for its edge.
+  const bluffScale = difficulty === 'easy' ? 0.4 : difficulty === 'medium' ? 0.7 : 1.0;
+  const bluffCap = difficulty === 'easy' ? 0.4 : difficulty === 'medium' ? 0.42 : 0.6;
+  let bluffFreq = dynamicBluffFrequency(p, ctx) * exploit.bluffMult * bluffScale;
+  bluffFreq = clamp(bluffFreq + exploit.stealBonus * 0.4, 0, bluffCap);
 
   const short = isShortStack(ctx);
   // Value and bluff share one sizing distribution (a bluff isn't readable by size).
