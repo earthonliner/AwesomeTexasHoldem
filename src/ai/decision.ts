@@ -1,7 +1,12 @@
 import type { Rng } from '../engine/deck';
 import { defaultRng } from '../engine/deck';
 import type { Difficulty } from '../engine/gameTypes';
-import { estimateEquity } from '../engine/monteCarlo';
+import {
+  estimateEquity,
+  estimateEquityVsRange,
+  estimateRangeFraction,
+  estimateBluffShare,
+} from '../engine/monteCarlo';
 import type { Personality, DecisionContext, AIDecision, HeroProfile } from './types';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { boardWetness } from './boardTexture';
@@ -92,20 +97,29 @@ interface Exploit {
   stealBonus: number;
   /** Widen value / narrow our own bluffs when the hero calls down light. */
   valueLean: number;
+  /** Prefer trapping (call, let them keep barreling) vs an aggressive hero. */
+  trapMore: boolean;
 }
 
+/**
+ * Exploitative adjustments against the observed human style. Medium opponents
+ * exploit at reduced intensity (a good regular reading the table); hard applies
+ * the full read plus trapping.
+ */
 function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: HeroProfile): Exploit {
-  const base: Exploit = { bluffMult: 1, stealBonus: 0, valueLean: 0 };
-  if (difficulty !== 'hard' || !profile || profile.hands <= 15) return base;
+  const base: Exploit = { bluffMult: 1, stealBonus: 0, valueLean: 0, trapMore: false };
+  if (difficulty === 'easy' || !profile || profile.hands <= 15) return base;
+  const intensity = difficulty === 'hard' ? 1 : 0.55;
 
   if (profile.foldToSteal > 0.6 && ctx.positionFactor > 0.55) {
-    base.stealBonus = (profile.foldToSteal - 0.6) * 0.6;
+    base.stealBonus = (profile.foldToSteal - 0.6) * 0.6 * intensity;
   }
-  if (profile.foldToSteal > 0.55) base.bluffMult *= 1.3;
-  if (profile.wentToShowdown > 0.45) base.bluffMult *= 0.6; // sticky hero -> bluff less
+  if (profile.foldToSteal > 0.55) base.bluffMult *= 1 + 0.3 * intensity;
+  if (profile.wentToShowdown > 0.45) base.bluffMult *= 1 - 0.4 * intensity; // sticky -> bluff less
   if (profile.aggression > 0.6) {
-    base.bluffMult *= 0.8;
-    base.valueLean += 0.05; // call down a touch lighter vs maniacs
+    base.bluffMult *= 1 - 0.2 * intensity;
+    base.valueLean += 0.05 * intensity; // call down lighter vs maniacs
+    base.trapMore = difficulty === 'hard';
   }
   return base;
 }
@@ -217,15 +231,48 @@ function decidePostflop(
   exploit: Exploit,
   iterationsOpt?: number,
 ): AIDecision {
-  const iterations = iterationsOpt ?? 320;
-  const eq = estimateEquity({
-    heroCards: ctx.hole,
-    board: ctx.board,
-    opponents: Math.max(1, ctx.liveOpponents),
-    iterations,
-    rng,
-    mode: difficulty === 'easy' ? 'random' : 'range',
-  }).equity;
+  const iterations = iterationsOpt ?? (difficulty === 'hard' ? 420 : 320);
+
+  // Skilled opponents (medium/hard) estimate equity against realistic ranges:
+  // opponents who bet hold "top X% on this board" hands, and — crucially — that
+  // betting range includes bluffs. Modelling bluffs is what lets these AIs
+  // bluff-catch correctly, so a human can't print EV by barreling air at them.
+  let eq: number;
+  if (difficulty === 'easy') {
+    eq = estimateEquity({
+      heroCards: ctx.hole,
+      board: ctx.board,
+      opponents: Math.max(1, ctx.liveOpponents),
+      iterations,
+      rng,
+      mode: 'random',
+    }).equity;
+  } else {
+    const facingBet = ctx.toCall > 0;
+    const rangeFraction = estimateRangeFraction({
+      street: ctx.street,
+      facingBet,
+      toCall: ctx.toCall,
+      pot: ctx.potBefore,
+    });
+    const wetness = boardWetness(ctx.board);
+    const fullBluffShare = estimateBluffShare({
+      facingBet,
+      liveOpponents: Math.max(1, ctx.liveOpponents),
+      wetness,
+    });
+    // Hard reads bettors' bluff share accurately; medium partially discounts it.
+    const bluffShare = difficulty === 'hard' ? fullBluffShare : fullBluffShare * 0.6;
+    eq = estimateEquityVsRange({
+      heroCards: ctx.hole,
+      board: ctx.board,
+      opponents: Math.max(1, ctx.liveOpponents),
+      iterations,
+      rng,
+      rangeFraction,
+      bluffShare,
+    }).equity;
+  }
 
   const { toCall, potBefore, canCheck, positionFactor, street } = ctx;
   const opp = ctx.liveOpponents;
@@ -255,8 +302,10 @@ function decidePostflop(
   // ---- No bet to call: bet or check ----
   if (canCheck) {
     if (eq >= valueThresh) {
-      // Sometimes slow-play a monster to disguise the hand.
-      const slowPlay = eq > 0.85 && rng() < 0.3 * (1 - p.aggression);
+      // Sometimes slow-play a monster to disguise the hand; hard traps more
+      // often against an aggressive human (check to induce bluffs).
+      const trapBoost = exploit.trapMore ? 0.25 : 0;
+      const slowPlay = eq > 0.85 && rng() < 0.3 * (1 - p.aggression) + trapBoost;
       if (!slowPlay && rng() < 0.72 + p.aggression * 0.23) {
         const { amount, allIn } = sizeRaise(ctx, betSize, rng, short || strongValue);
         return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-bet']);
@@ -280,13 +329,20 @@ function decidePostflop(
   edge += p.positionAwareness * (positionFactor - 0.5) * 0.05; // position helps
   edge += exploit.valueLean;
 
-  let contProb = sigmoid(edge / 0.07);
+  // Hard plays closer to the math (sharper threshold); others are noisier.
+  const temperature = difficulty === 'hard' ? 0.05 : 0.07;
+  let contProb = sigmoid(edge / temperature);
   // Rarely fold when closing for a tiny price relative to the pot.
   if (directOdds <= 0.18 && eq > 0.18) contProb = Math.max(contProb, 0.8);
 
   reason.push(`odds=${directOdds.toFixed(2)}`, `edge=${edge.toFixed(2)}`);
 
   if (rng() < contProb) {
+    // Trap: vs an over-aggressive human, flat-call strong hands more often and
+    // let them keep bluffing into us instead of raising them off their air.
+    if (exploit.trapMore && eq >= valueThresh + 0.06 && !short && rng() < 0.5) {
+      return mk('call', 0, rng, false, [...reason, 'trap-call'], true);
+    }
     // Continue: choose raise vs call with mixed frequencies.
     if (eq >= valueThresh + 0.06 && rng() < 0.45 + p.aggression * 0.4) {
       const { amount, allIn } = sizeRaise(ctx, betSize, rng, short || strongValue);
