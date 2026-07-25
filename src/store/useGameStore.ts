@@ -9,6 +9,7 @@ import { updateHeroProfile, emptyHeroProfile } from '../ai/profile';
 import type { DecisionContext, HeroProfile } from '../ai/types';
 import { computeHeroAnalysis, computeFoldOutcome, type HeroAnalysis } from '../utils/analysis';
 import { sound, setMuted } from '../utils/sound';
+import { setDisplayBlindLevel, formatSigned } from '../utils/format';
 import {
   type Settings,
   type Stats,
@@ -22,6 +23,7 @@ import { loadPersisted, savePersisted } from './persist';
 
 const persisted = loadPersisted();
 setMuted(!persisted.settings.sound);
+setDisplayBlindLevel(persisted.settings.blindLevel);
 
 let aiTimer: ReturnType<typeof setTimeout> | null = null;
 let nextHandTimer: ReturnType<typeof setTimeout> | null = null;
@@ -228,6 +230,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   updateSettings: (patch) => {
     const settings = { ...get().settings, ...patch };
     setMuted(!settings.sound);
+    setDisplayBlindLevel(settings.blindLevel);
     set({ settings });
     persistNow({ ...get(), settings } as GameStore);
   },
@@ -463,8 +466,8 @@ function buildResultText(game: GameState, heroId: number, heroDelta: number): st
     .filter((p) => p.amount > 0)
     .map((p) => game.players.find((x) => x.id === p.playerId)?.name ?? '?');
   const youWon = game.payouts.some((p) => p.playerId === heroId && p.amount > 0);
-  if (youWon && heroDelta > 0) return `你赢得了底池 (+${(heroDelta / BB_CHIPS).toFixed(1)} BB)`;
-  if (heroDelta < 0) return `${winnerNames.join('、')} 赢得底池 (${(heroDelta / BB_CHIPS).toFixed(1)} BB)`;
+  if (youWon && heroDelta > 0) return `你赢得了底池 (${formatSigned(heroDelta)})`;
+  if (heroDelta < 0) return `${winnerNames.join('、')} 赢得底池 (${formatSigned(heroDelta)})`;
   return `本手结束`;
 }
 

@@ -495,7 +495,8 @@ export class Room {
     if (winners.length === 0) return '本手结束';
     const names = winners.map((w) => this.seats[w.playerId]?.name ?? `Seat${w.playerId}`);
     const total = winners.reduce((s, w) => s + w.amount, 0);
-    return `${names.join('、')} 赢得底池 (${(total / BB_CHIPS).toFixed(1)} BB)`;
+    const money = (total / BB_CHIPS) * this.config.blindLevel;
+    return `${names.join('、')} 赢得底池 ($${Math.round(money * 100) / 100})`;
   }
 
   // ---------- broadcasting ----------
