@@ -26,17 +26,22 @@ export interface DecideOptions {
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
 
-/** True when the stack is short relative to the pot — a natural commit spot. */
+/**
+ * True when the stack is genuinely committed relative to the pot (SPR ≤ ~1).
+ * Only these spots justify an all-in in a cash game; anything deeper should be
+ * played with normal fraction-of-pot sizing that preserves the stack.
+ */
 function isShortStack(ctx: DecisionContext): boolean {
   const potAfterCall = ctx.potBefore + ctx.toCall;
-  return ctx.stack <= potAfterCall * 1.25;
+  return ctx.stack <= potAfterCall;
 }
 
 /**
- * Size a bet/raise as a fraction of the pot. Humans rarely jam all-in for many
- * times the pot, so we only convert to an all-in when it is a genuine commit
- * spot (`allowAllIn`): a short stack, or near-committed sizing. Otherwise the
- * size is capped so chips are left behind instead of shoving.
+ * Size a bet/raise as a fraction of the pot with cash-game discipline: real
+ * players protect their stack, so all-in only happens at a genuine commit spot
+ * (`allowAllIn`, i.e. short stack / low SPR) or when the min-raise rules force
+ * it. Deep-stacked bets are capped well below all-in; big pots get built over
+ * multiple streets and raise wars, not by open-jamming.
  */
 function sizeRaise(
   ctx: DecisionContext,
@@ -51,13 +56,14 @@ function sizeRaise(
   let target = Math.max(currentLevel + raiseBy, ctx.minRaiseTo);
 
   if (target >= ctx.maxRaiseTo) return { amount: ctx.maxRaiseTo, allIn: true };
-  if (allowAllIn && target >= ctx.maxRaiseTo * 0.85) {
-    // Already nearly all-in: commit rather than leave dust behind.
+  if (allowAllIn && target >= ctx.maxRaiseTo * 0.9) {
+    // Already nearly all-in at a commit spot: don't leave dust behind.
     return { amount: ctx.maxRaiseTo, allIn: true };
   }
   if (!allowAllIn) {
-    // Never shove off a deep stack on a normal bet/bluff; cap below all-in.
-    target = Math.min(target, Math.round(ctx.maxRaiseTo * 0.7));
+    // Deep stack: keep plenty behind. (The engine may still bump this up to the
+    // legal minimum raise in a raise war — that forced escalation is realistic.)
+    target = Math.min(target, Math.round(ctx.maxRaiseTo * 0.6));
     target = Math.max(target, ctx.minRaiseTo);
   }
   target = Math.min(target, ctx.maxRaiseTo);
@@ -102,24 +108,23 @@ interface Exploit {
 }
 
 /**
- * Exploitative adjustments against the observed human style. Medium opponents
- * exploit at reduced intensity (a good regular reading the table); hard applies
- * the full read plus trapping.
+ * Exploitative adjustments against the observed human style. Medium and hard
+ * are equally sharp readers (medium is the "realistic cash game" variant, hard
+ * the more aggressive one); easy doesn't adjust at all.
  */
 function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: HeroProfile): Exploit {
   const base: Exploit = { bluffMult: 1, stealBonus: 0, valueLean: 0, trapMore: false };
   if (difficulty === 'easy' || !profile || profile.hands <= 15) return base;
-  const intensity = difficulty === 'hard' ? 1 : 0.55;
 
   if (profile.foldToSteal > 0.6 && ctx.positionFactor > 0.55) {
-    base.stealBonus = (profile.foldToSteal - 0.6) * 0.6 * intensity;
+    base.stealBonus = (profile.foldToSteal - 0.6) * 0.6;
   }
-  if (profile.foldToSteal > 0.55) base.bluffMult *= 1 + 0.3 * intensity;
-  if (profile.wentToShowdown > 0.45) base.bluffMult *= 1 - 0.4 * intensity; // sticky -> bluff less
+  if (profile.foldToSteal > 0.55) base.bluffMult *= 1.3;
+  if (profile.wentToShowdown > 0.45) base.bluffMult *= 0.6; // sticky -> bluff less
   if (profile.aggression > 0.6) {
-    base.bluffMult *= 1 - 0.2 * intensity;
-    base.valueLean += 0.05 * intensity; // call down lighter vs maniacs
-    base.trapMore = difficulty === 'hard';
+    base.bluffMult *= 0.8;
+    base.valueLean += 0.05; // call down lighter vs maniacs
+    base.trapMore = true;
   }
   return base;
 }
@@ -231,7 +236,8 @@ function decidePostflop(
   exploit: Exploit,
   iterationsOpt?: number,
 ): AIDecision {
-  const iterations = iterationsOpt ?? (difficulty === 'hard' ? 420 : 320);
+  const skilled = difficulty !== 'easy';
+  const iterations = iterationsOpt ?? (skilled ? 420 : 320);
 
   // Skilled opponents (medium/hard) estimate equity against realistic ranges:
   // opponents who bet hold "top X% on this board" hands, and — crucially — that
@@ -261,8 +267,8 @@ function decidePostflop(
       liveOpponents: Math.max(1, ctx.liveOpponents),
       wetness,
     });
-    // Hard reads bettors' bluff share accurately; medium partially discounts it.
-    const bluffShare = difficulty === 'hard' ? fullBluffShare : fullBluffShare * 0.6;
+    // Medium and hard both read bettors' bluff share accurately.
+    const bluffShare = fullBluffShare;
     eq = estimateEquityVsRange({
       heroCards: ctx.hole,
       board: ctx.board,
@@ -284,18 +290,18 @@ function decidePostflop(
   const valueThresh = Math.min(0.82, 0.5 + 0.075 * opp);
   const draw = cardsToCome && eq >= 0.3 && eq < valueThresh;
 
-  // Keep bluffing balanced (believable) rather than spewy. Medium in particular
-  // is capped so no opponent over-bluffs and becomes easy to read; hard leans on
-  // exploits (not raw frequency) for its edge.
-  const bluffScale = difficulty === 'easy' ? 0.4 : difficulty === 'medium' ? 0.7 : 1.0;
-  const bluffCap = difficulty === 'easy' ? 0.4 : difficulty === 'medium' ? 0.42 : 0.6;
+  // Keep bluffing balanced (believable) rather than spewy. Medium (the cash-game
+  // simulation) bluffs at controlled cash-game frequencies; hard pushes harder.
+  const bluffScale = difficulty === 'easy' ? 0.4 : difficulty === 'medium' ? 0.75 : 1.0;
+  const bluffCap = difficulty === 'easy' ? 0.4 : difficulty === 'medium' ? 0.45 : 0.6;
   let bluffFreq = dynamicBluffFrequency(p, ctx) * exploit.bluffMult * bluffScale;
   bluffFreq = clamp(bluffFreq + exploit.stealBonus * 0.4, 0, bluffCap);
 
   const short = isShortStack(ctx);
-  // Value and bluff share one sizing distribution (a bluff isn't readable by size).
+  // Value and bluff share one sizing distribution (a bluff isn't readable by
+  // size). Even monsters bet normal sizes when deep — in a cash game you build
+  // the pot across streets; jamming only makes sense at a low-SPR commit spot.
   const betSize = pickBetSize(p.aggression, wet, rng);
-  const strongValue = eq >= 0.9;
 
   const reason = [`eq=${eq.toFixed(2)}`, `vt=${valueThresh.toFixed(2)}`, `bf=${bluffFreq.toFixed(2)}`];
 
@@ -307,7 +313,7 @@ function decidePostflop(
       const trapBoost = exploit.trapMore ? 0.25 : 0;
       const slowPlay = eq > 0.85 && rng() < 0.3 * (1 - p.aggression) + trapBoost;
       if (!slowPlay && rng() < 0.72 + p.aggression * 0.23) {
-        const { amount, allIn } = sizeRaise(ctx, betSize, rng, short || strongValue);
+        const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
         return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-bet']);
       }
       return mk('check', 0, rng, false, [...reason, 'slowplay-check']);
@@ -329,8 +335,8 @@ function decidePostflop(
   edge += p.positionAwareness * (positionFactor - 0.5) * 0.05; // position helps
   edge += exploit.valueLean;
 
-  // Hard plays closer to the math (sharper threshold); others are noisier.
-  const temperature = difficulty === 'hard' ? 0.05 : 0.07;
+  // Skilled players (medium/hard) play close to the math; easy is noisier.
+  const temperature = skilled ? 0.05 : 0.07;
   let contProb = sigmoid(edge / temperature);
   // Rarely fold when closing for a tiny price relative to the pot.
   if (directOdds <= 0.18 && eq > 0.18) contProb = Math.max(contProb, 0.8);
@@ -345,7 +351,7 @@ function decidePostflop(
     }
     // Continue: choose raise vs call with mixed frequencies.
     if (eq >= valueThresh + 0.06 && rng() < 0.45 + p.aggression * 0.4) {
-      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short || strongValue);
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-raise'], true);
     }
     if (draw && rng() < bluffFreq * 0.6) {
@@ -353,7 +359,7 @@ function decidePostflop(
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'semi-raise'], true);
     }
     if (eq >= valueThresh && rng() < p.aggression * 0.3) {
-      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short || strongValue);
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'thin-raise'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'odds-call'], true);
