@@ -308,6 +308,67 @@ describe('AI sizing realism (all-in discipline)', () => {
   });
 });
 
+describe('cash-game raise sizing (no 50-100bb spikes)', () => {
+  const aa = parseCards('As Ad') as [Card, Card];
+
+  it('preflop open stays around 2-4 big blinds', () => {
+    for (let s = 0; s < 25; s++) {
+      const d = decide({
+        personality: { ...tag, pfr: 0.9 },
+        difficulty: 'medium',
+        ctx: ctx({ hole: aa, toCall: 2, potBefore: 3, streetCommitted: 0, minRaiseTo: 4, maxRaiseTo: 400, stack: 400 }),
+        rng: seeded(s + 1000),
+      });
+      if (d.action === 'raise') {
+        expect(d.amount).toBeLessThanOrEqual(8); // ≤ 4 BB open
+        expect(d.amount).toBeGreaterThanOrEqual(4);
+      }
+    }
+  });
+
+  it('preflop 3-bet is a normal multiple of the open, not pot-spiral', () => {
+    // Facing a 3bb open (6 chips): 3-bet should land ~2.2-3.2x = 13-20 chips.
+    for (let s = 0; s < 25; s++) {
+      const d = decide({
+        personality: { ...tag, pfr: 0.9 },
+        difficulty: 'medium',
+        ctx: ctx({ hole: aa, toCall: 6, potBefore: 9, streetCommitted: 0, minRaiseTo: 10, maxRaiseTo: 400, stack: 400 }),
+        rng: seeded(s + 1100),
+      });
+      if (d.action === 'raise') {
+        expect(d.amount).toBeLessThanOrEqual(22); // ≤ ~11 BB, no 50bb jumps
+      }
+    }
+  });
+
+  it('river raise stays near 2-3x the bet faced', () => {
+    const board = parseCards('Ah Kd 7s 4c 2d');
+    for (let s = 0; s < 25; s++) {
+      const d = decide({
+        personality: { ...tag, aggression: 0.9 },
+        difficulty: 'medium',
+        ctx: ctx({
+          hole: aa,
+          board,
+          street: 'river',
+          canCheck: false,
+          toCall: 20,
+          potBefore: 60,
+          streetCommitted: 0,
+          minRaiseTo: 40,
+          maxRaiseTo: 400,
+          stack: 400,
+        }),
+        rng: seeded(s + 1200),
+        iterations: 150,
+      });
+      if (d.action === 'raise') {
+        expect(d.amount).toBeLessThanOrEqual(70); // ≤ ~3.2x bet + cap, never 100bb+
+      }
+    }
+  });
+});
+
 describe('generatePersonality', () => {
   it('easy personalities have no position awareness and low bluff', () => {
     for (let s = 0; s < 6; s++) {

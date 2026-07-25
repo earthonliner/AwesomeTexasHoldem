@@ -29,8 +29,22 @@ export function Lobby({ view, onExit }: { view: RoomView; onExit: () => void }) 
         <h2 className="mb-2 text-sm font-semibold text-slate-200">牌桌设置 {!isHost && <span className="text-xs text-slate-500">（仅房主可改）</span>}</h2>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <ConfigChoice label="座位数" disabled={!isHost} value={view.config.seatCount} options={[2, 3, 4, 6, 8, 9]} onPick={(v) => setConfig({ seatCount: v })} />
-          <ConfigChoice label="大盲" disabled={!isHost} value={view.config.blindLevel} options={[0.5, 1, 2, 5]} onPick={(v) => setConfig({ blindLevel: v })} />
-          <ConfigChoice label="起始码(BB)" disabled={!isHost} value={view.config.startingStackBB} options={[50, 100, 150, 200]} onPick={(v) => setConfig({ startingStackBB: v })} />
+          <ConfigChoiceMoney
+            label="大盲"
+            disabled={!isHost}
+            value={view.config.blindLevel}
+            options={[0.5, 1, 2, 5]}
+            render={(v) => `$${v}`}
+            onPick={(v) => setConfig({ blindLevel: v })}
+          />
+          <ConfigChoiceMoney
+            label="买入"
+            disabled={!isHost}
+            value={view.config.startingStackBB}
+            options={[50, 100, 150, 200]}
+            render={(v) => `$${v * view.config.blindLevel}`}
+            onPick={(v) => setConfig({ startingStackBB: v })}
+          />
           <ConfigChoiceStr
             label="难度"
             disabled={!isHost}
@@ -122,6 +136,26 @@ function ConfigChoice({
   disabled?: boolean;
 }) {
   return (
+    <ConfigChoiceMoney label={label} value={value} options={options} render={(v) => `${v}`} onPick={onPick} disabled={disabled} />
+  );
+}
+
+function ConfigChoiceMoney({
+  label,
+  value,
+  options,
+  render,
+  onPick,
+  disabled,
+}: {
+  label: string;
+  value: number;
+  options: number[];
+  render: (v: number) => string;
+  onPick: (v: number) => void;
+  disabled?: boolean;
+}) {
+  return (
     <div>
       <div className="mb-1 text-xs text-slate-400">{label}</div>
       <div className="flex flex-wrap gap-1">
@@ -132,7 +166,7 @@ function ConfigChoice({
             onClick={() => onPick(o)}
             className={`rounded px-2 py-1 text-xs ${value === o ? 'bg-amber-600 font-semibold text-white' : 'bg-slate-700 text-slate-300'} ${disabled ? 'opacity-60' : 'hover:bg-slate-600'}`}
           >
-            {o}
+            {render(o)}
           </button>
         ))}
       </div>
