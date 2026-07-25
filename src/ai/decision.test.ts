@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
+import { emptyHeroProfile } from './profile';
 import type { DecisionContext, Personality } from './types';
 import { parseCards } from '../engine/deck';
 import type { Card } from '../engine/types';
@@ -271,8 +272,55 @@ describe('generatePersonality', () => {
       const p = generatePersonality('medium', seeded(s + 1));
       expect(p.bluff).toBeLessThan(0.28); // no wild bluffers
       expect(p.bluff).toBeGreaterThan(0.05);
-      expect(p.positionAwareness).toBeGreaterThan(0.45); // all reasonably skilled
+      expect(p.positionAwareness).toBeGreaterThan(0.6); // all skilled
     }
+  });
+
+  it('medium mixes TAG and LAG archetypes (both skilled styles present)', () => {
+    let tagCount = 0;
+    let lagCount = 0;
+    for (let s = 0; s < 40; s++) {
+      const p = generatePersonality('medium', seeded(s + 77));
+      if (p.vpip >= 0.32) lagCount++;
+      if (p.vpip <= 0.28) tagCount++;
+    }
+    expect(tagCount).toBeGreaterThan(8); // both archetypes clearly present
+    expect(lagCount).toBeGreaterThan(8);
+  });
+});
+
+describe('medium exploits the observed human style', () => {
+  const trashHole = parseCards('9c 4d') as [Card, Card];
+
+  function stealRaiseRate(withProfile: boolean): number {
+    const profile = {
+      ...emptyHeroProfile(),
+      hands: 60,
+      foldToSteal: 0.9,
+    };
+    let raises = 0;
+    const n = 40;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'medium',
+        ctx: ctx({
+          hole: trashHole,
+          toCall: 2,
+          potBefore: 3,
+          positionFactor: 0.95, // button
+          street: 'preflop',
+        }),
+        rng: seeded(s + 900),
+        heroProfile: withProfile ? profile : undefined,
+      });
+      if (d.action === 'raise' || d.action === 'allin') raises++;
+    }
+    return raises / n;
+  }
+
+  it('steals the blinds more from a human who over-folds', () => {
+    expect(stealRaiseRate(true)).toBeGreaterThan(stealRaiseRate(false));
   });
 });
 
