@@ -82,13 +82,29 @@ export function Seat({ player, isButton, isActive, isThinking, revealed, showHud
       )}
 
       {isButton && (
-        <div className="absolute -bottom-2 left-1 flex h-6 w-6 items-center justify-center rounded-full bg-white text-xs font-bold text-slate-900 shadow">
+        <div
+          className="absolute -bottom-3 left-0 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-yellow-200 to-amber-400 text-sm font-extrabold text-slate-900 shadow-lg ring-2 ring-white"
+          title="庄家按钮 (Dealer)"
+        >
           D
         </div>
       )}
 
-      {positionLabel && (
-        <div className="absolute -bottom-2 right-1 rounded bg-slate-700 px-1 text-[10px] text-slate-300">{positionLabel}</div>
+      {positionLabel === 'SB' && (
+        <div
+          className="absolute -bottom-3 right-0 z-10 flex h-6 items-center rounded-full bg-sky-500 px-2 text-[11px] font-bold text-white shadow-lg ring-2 ring-white/80"
+          title="小盲注 (Small Blind)"
+        >
+          小盲
+        </div>
+      )}
+      {positionLabel === 'BB' && (
+        <div
+          className="absolute -bottom-3 right-0 z-10 flex h-6 items-center rounded-full bg-orange-500 px-2 text-[11px] font-bold text-white shadow-lg ring-2 ring-white/80"
+          title="大盲注 (Big Blind)"
+        >
+          大盲
+        </div>
       )}
 
       {showHud && hudStat && hudStat.hands > 0 && (

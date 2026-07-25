@@ -8,6 +8,8 @@ export interface Settings {
   seatCount: number;
   blindLevel: number;
   startingStackBB: number;
+  /** Chips-per-big-blind display ratio: 1 (show $) / 10 / 20 (show chips). */
+  chipRatio: number;
   difficulty: Difficulty;
   sound: boolean;
   /** Master enable for the objective math panel (still collapsed by default). */
@@ -109,6 +111,7 @@ export const DEFAULT_SETTINGS: Settings = {
   seatCount: 6,
   blindLevel: 1,
   startingStackBB: 100,
+  chipRatio: 1,
   difficulty: 'medium',
   sound: true,
   mathEnabled: true,
