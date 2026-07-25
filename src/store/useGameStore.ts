@@ -343,6 +343,7 @@ function buildDecisionContext(game: GameState, idx: number): DecisionContext {
     minRaiseTo: legal.minRaiseTo,
     maxRaiseTo: legal.maxRaiseTo,
     streetCommitted: p.streetCommitted,
+    totalCommitted: p.totalCommitted,
     recentImage: 0.3,
   };
 }

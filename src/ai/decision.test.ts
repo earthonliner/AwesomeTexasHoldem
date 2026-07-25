@@ -43,6 +43,7 @@ function ctx(partial: Partial<DecisionContext> & { hole: [Card, Card] }): Decisi
     minRaiseTo: 4,
     maxRaiseTo: 200,
     streetCommitted: 0,
+    totalCommitted: 0,
     recentImage: 0,
     ...partial,
   };
@@ -366,6 +367,95 @@ describe('cash-game raise sizing (no 50-100bb spikes)', () => {
         expect(d.amount).toBeLessThanOrEqual(70); // ≤ ~3.2x bet + cap, never 100bb+
       }
     }
+  });
+});
+
+describe('stake budgeting (single-hand investment discipline)', () => {
+  it('never re-raises a weak hand in an escalated pot (call or fold only)', () => {
+    // Raise war already at 30bb; a weak hand must not keep escalating.
+    const hole = parseCards('7s 2d') as [Card, Card];
+    const board = parseCards('Kh 9c 4d');
+    for (let s = 0; s < 30; s++) {
+      const d = decide({
+        personality: { ...tag, aggression: 0.9, bluff: 0.4 },
+        difficulty: 'medium',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: false,
+          toCall: 60,
+          potBefore: 150,
+          streetCommitted: 0,
+          totalCommitted: 40,
+          minRaiseTo: 120,
+          maxRaiseTo: 340,
+          stack: 340,
+        }),
+        rng: seeded(s + 1300),
+        iterations: 120,
+      });
+      expect(['fold', 'call']).toContain(d.action);
+    }
+  });
+
+  it('stops raising a decent-but-not-monster hand once ~50bb is invested', () => {
+    // Mid pair, already 100 chips (50bb) in: no further escalation.
+    const hole = parseCards('8h 8c') as [Card, Card];
+    const board = parseCards('Ad 7s 2c');
+    for (let s = 0; s < 30; s++) {
+      const d = decide({
+        personality: { ...tag, aggression: 0.9 },
+        difficulty: 'medium',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: false,
+          toCall: 30,
+          potBefore: 220,
+          streetCommitted: 0,
+          totalCommitted: 100,
+          minRaiseTo: 60,
+          maxRaiseTo: 300,
+          stack: 300,
+        }),
+        rng: seeded(s + 1400),
+        iterations: 120,
+      });
+      expect(d.action).not.toBe('raise');
+      expect(d.action).not.toBe('allin');
+    }
+  });
+
+  it('still allows stacking off with a near-nut hand', () => {
+    // Top set on a dry board: budget is uncapped, raises stay possible.
+    const hole = parseCards('Kh Kc') as [Card, Card];
+    const board = parseCards('Ks 7d 2c');
+    let raises = 0;
+    for (let s = 0; s < 30; s++) {
+      const d = decide({
+        personality: { ...tag, aggression: 0.9 },
+        difficulty: 'medium',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: false,
+          toCall: 30,
+          potBefore: 100,
+          streetCommitted: 0,
+          totalCommitted: 60,
+          minRaiseTo: 60,
+          maxRaiseTo: 300,
+          stack: 300,
+        }),
+        rng: seeded(s + 1500),
+        iterations: 150,
+      });
+      if (d.action === 'raise' || d.action === 'allin') raises++;
+    }
+    expect(raises).toBeGreaterThan(0);
   });
 });
 

@@ -49,6 +49,8 @@ export interface DecisionContext {
   minRaiseTo: number;
   maxRaiseTo: number;
   streetCommitted: number;
+  /** Chips this player has invested across the whole hand (for stake budgeting). */
+  totalCommitted: number;
   /** AI's own recent aggressive image, 0..1 (higher = looks aggressive). */
   recentImage: number;
 }

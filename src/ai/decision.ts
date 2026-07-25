@@ -53,6 +53,7 @@ function sizeRaise(
   fraction: number,
   rng: Rng,
   allowAllIn: boolean,
+  capTarget = Infinity,
 ): { amount: number; allIn: boolean } {
   const currentLevel = ctx.streetCommitted + ctx.toCall;
   const potAfterCall = ctx.potBefore + ctx.toCall;
@@ -70,6 +71,8 @@ function sizeRaise(
     const betBy = Math.max(ctx.bigBlind, Math.round(potAfterCall * fraction * jitter));
     target = currentLevel + betBy;
   }
+  // Stake budget: never escalate the hand beyond what the hand strength is worth.
+  target = Math.min(target, Math.floor(capTarget));
   target = Math.max(target, ctx.minRaiseTo);
 
   if (target >= ctx.maxRaiseTo) return { amount: ctx.maxRaiseTo, allIn: true };
@@ -85,6 +88,43 @@ function sizeRaise(
   }
   target = Math.min(target, ctx.maxRaiseTo);
   return { amount: target, allIn: target >= ctx.maxRaiseTo };
+}
+
+/**
+ * Cash-game stake budgeting: how many chips a sensible player is willing to
+ * invest in ONE hand, as a function of hand strength. In a friendly 6-max cash
+ * game a hand's investment rarely exceeds ~50 big blinds — only near-nut hands
+ * stack off. Exceeding the budget downgrades a raise to a call/fold; calls
+ * themselves stay pot-odds-driven (budget limits escalation, not defense).
+ */
+function investBudget(eq: number, bigBlind: number): number {
+  if (eq >= 0.85) return Infinity; // near-nuts: stacking off is fine
+  if (eq >= 0.7) return bigBlind * 50;
+  if (eq >= 0.55) return bigBlind * 30;
+  return bigBlind * 14; // air, weak pairs, draws: keep the pot small
+}
+
+/** Same idea pre-flop, driven by the starting-hand percentile. */
+function preflopBudget(pct: number, bigBlind: number): number {
+  if (pct >= 0.985) return Infinity; // QQ+/AK territory
+  if (pct >= 0.94) return bigBlind * 25;
+  if (pct >= 0.85) return bigBlind * 12;
+  return bigBlind * 6;
+}
+
+/**
+ * Highest raise target that keeps this hand's total investment within budget.
+ * Returns Infinity when uncapped.
+ */
+function budgetCapTarget(ctx: DecisionContext, budget: number): number {
+  if (!Number.isFinite(budget)) return Infinity;
+  const investedBeforeStreet = Math.max(0, ctx.totalCommitted - ctx.streetCommitted);
+  return Math.max(0, budget - investedBeforeStreet);
+}
+
+/** Whether a legal raise is possible without blowing the budget. */
+function canRaiseWithinBudget(ctx: DecisionContext, capTarget: number): boolean {
+  return capTarget >= ctx.minRaiseTo;
 }
 
 /**
@@ -196,11 +236,14 @@ function decidePreflop(
   // Only ever shove pre-flop when genuinely short-stacked; otherwise keep raises
   // to a normal size (humans don't open-jam 100bb deep).
   const allowAllIn = isShortStack(ctx);
+  // Stake budget: e.g. don't 4-bet a medium hand into a 30bb pre-flop pot.
+  const cap = budgetCapTarget(ctx, preflopBudget(pct, bigBlind));
+  const mayRaise = canRaiseWithinBudget(ctx, cap);
 
   // Unraised pot (big-blind option or limped to us): raise strong, else check.
   if (canCheck) {
-    if (strength >= raiseThresh && rng() < 0.55 + p.pfr * 0.35) {
-      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn);
+    if (mayRaise && strength >= raiseThresh && rng() < 0.55 + p.pfr * 0.35) {
+      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'pf-iso']);
     }
     return mk('check', 0, rng, false, [...reason, 'pf-check']);
@@ -208,8 +251,8 @@ function decidePreflop(
 
   // Facing a bet/raise.
   if (strength >= raiseThresh) {
-    if (rng() < 0.5 + p.pfr * 0.4) {
-      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn);
+    if (mayRaise && rng() < 0.5 + p.pfr * 0.4) {
+      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'pf-raise'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'pf-trap-call'], true);
@@ -217,8 +260,8 @@ function decidePreflop(
 
   if (strength >= playThresh) {
     // Aggressive players occasionally turn a playable hand into a light 3-bet.
-    if (p.aggression > 0.6 && positionFactor > 0.6 && rng() < p.bluff * 0.4) {
-      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn);
+    if (mayRaise && p.aggression > 0.6 && positionFactor > 0.6 && rng() < p.bluff * 0.4) {
+      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'pf-light-3bet'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'pf-call'], true);
@@ -227,11 +270,12 @@ function decidePreflop(
   // Occasional pure steal from late position even with trash (not on easy).
   if (
     difficulty !== 'easy' &&
+    mayRaise &&
     positionFactor > 0.78 &&
     toCall <= bigBlind * 1.5 &&
     rng() < p.bluff * 0.25 + exploit.stealBonus
   ) {
-    const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn);
+    const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn, cap);
     return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'pf-steal'], true);
   }
 
@@ -319,6 +363,10 @@ function decidePostflop(
   // size). Even monsters bet normal sizes when deep — in a cash game you build
   // the pot across streets; jamming only makes sense at a low-SPR commit spot.
   const betSize = pickBetSize(p.aggression, wet, rng);
+  // Stake budget: a hand is only worth so much. Once this hand's investment
+  // would exceed the strength-based budget, stop escalating (check/call/fold).
+  const cap = budgetCapTarget(ctx, investBudget(eq, ctx.bigBlind));
+  const mayRaise = canRaiseWithinBudget(ctx, cap);
 
   const reason = [`eq=${eq.toFixed(2)}`, `vt=${valueThresh.toFixed(2)}`, `bf=${bluffFreq.toFixed(2)}`];
 
@@ -329,15 +377,15 @@ function decidePostflop(
       // often against an aggressive human (check to induce bluffs).
       const trapBoost = exploit.trapMore ? 0.25 : 0;
       const slowPlay = eq > 0.85 && rng() < 0.3 * (1 - p.aggression) + trapBoost;
-      if (!slowPlay && rng() < 0.72 + p.aggression * 0.23) {
-        const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
+      if (!slowPlay && mayRaise && rng() < 0.72 + p.aggression * 0.23) {
+        const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
         return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-bet']);
       }
       return mk('check', 0, rng, false, [...reason, 'slowplay-check']);
     }
-    if (rng() < bluffFreq) {
+    if (mayRaise && rng() < bluffFreq) {
       // Bluffs never shove off a deep stack (only when already short).
-      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, draw ? 'semi-bluff' : 'bluff-bet']);
     }
     return mk('check', 0, rng, false, [...reason, 'check']);
@@ -366,25 +414,25 @@ function decidePostflop(
     if (exploit.trapMore && eq >= valueThresh + 0.06 && !short && rng() < 0.5) {
       return mk('call', 0, rng, false, [...reason, 'trap-call'], true);
     }
-    // Continue: choose raise vs call with mixed frequencies.
-    if (eq >= valueThresh + 0.06 && rng() < 0.45 + p.aggression * 0.4) {
-      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
+    // Continue: choose raise vs call with mixed frequencies (within budget).
+    if (mayRaise && eq >= valueThresh + 0.06 && rng() < 0.45 + p.aggression * 0.4) {
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-raise'], true);
     }
-    if (draw && rng() < bluffFreq * 0.6) {
-      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
+    if (mayRaise && draw && rng() < bluffFreq * 0.6) {
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'semi-raise'], true);
     }
-    if (eq >= valueThresh && rng() < p.aggression * 0.3) {
-      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
+    if (mayRaise && eq >= valueThresh && rng() < p.aggression * 0.3) {
+      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'thin-raise'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'odds-call'], true);
   }
 
   // Fold zone: occasionally turn it into a bluff-raise when cheap (never a deep shove).
-  if (rng() < bluffFreq * 0.3 && toCall <= potBefore * 0.5) {
-    const { amount, allIn } = sizeRaise(ctx, betSize, rng, short);
+  if (mayRaise && rng() < bluffFreq * 0.3 && toCall <= potBefore * 0.5) {
+    const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
     return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'bluff-raise'], true);
   }
 
