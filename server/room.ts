@@ -486,6 +486,7 @@ export class Room {
       minRaiseTo: legal.minRaiseTo,
       maxRaiseTo: legal.maxRaiseTo,
       streetCommitted: p.streetCommitted,
+      totalCommitted: p.totalCommitted,
       recentImage: 0.3,
     };
   }

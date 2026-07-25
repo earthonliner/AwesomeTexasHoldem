@@ -38,6 +38,7 @@ function buildCtx(game: GameState, idx: number): DecisionContext {
     minRaiseTo: legal.minRaiseTo,
     maxRaiseTo: legal.maxRaiseTo,
     streetCommitted: p.streetCommitted,
+      totalCommitted: p.totalCommitted,
     recentImage: 0.3,
   };
 }
@@ -94,6 +95,35 @@ describe('integration: full AI-driven sessions', () => {
       }
     });
   }
+
+  it('6-max cash session: all-ins are rare and most hands stay under ~50bb invested', () => {
+    const rng = seeded(777);
+    const config: GameConfig = { seatCount: 6, blindLevel: 1, startingStackBB: 100, difficulty: 'medium' };
+    const personalities = Array.from({ length: 6 }, (_, i) => generatePersonality('medium', seeded(i + 11)));
+
+    let stacks = Array.from({ length: 6 }, () => 100 * BB_CHIPS);
+    let button = 0;
+    let allinHands = 0;
+    let bigInvestHands = 0;
+    const HANDS = 40;
+
+    for (let hand = 0; hand < HANDS; hand++) {
+      stacks = stacks.map((s) => (s <= 0 ? 100 * BB_CHIPS : s));
+      const seats: SeatInit[] = stacks.map((stack, i) => ({ id: i, name: `P${i}`, isHero: i === 0, stack }));
+      const game = playHand(config, seats, personalities, button, 'medium', rng);
+
+      if (game.history.some((a) => a.type === 'allin')) allinHands++;
+      const maxInvested = Math.max(...game.players.map((p) => p.totalCommitted));
+      if (maxInvested > 50 * BB_CHIPS) bigInvestHands++;
+
+      stacks = game.players.map((p) => p.stack);
+      button = (button + 1) % 6;
+    }
+
+    // Friendly-cash-game shape: the vast majority of hands stay small.
+    expect(allinHands / HANDS).toBeLessThan(0.15);
+    expect(bigInvestHands / HANDS).toBeLessThan(0.15);
+  });
 
   it('handles hard difficulty with a hero profile without errors', () => {
     const rng = seeded(99);
