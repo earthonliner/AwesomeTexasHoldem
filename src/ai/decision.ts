@@ -62,8 +62,9 @@ function sizeRaise(
   let target: number;
   if (ctx.toCall > 0 && currentLevel > 0) {
     // Facing a bet: raise to a standard multiple of the bet, never beyond a
-    // pot-fraction raise on top of a call.
-    const xBet = currentLevel * (2.2 + rng() * 1.0);
+    // pot-fraction raise on top of a call. Kept at the small end of real cash
+    // sizing (open ~2-2.7bb, 3-bet ~2.5x open).
+    const xBet = currentLevel * (2.0 + rng() * 0.7);
     const potCap = currentLevel + potAfterCall * Math.max(fraction, 0.5) * jitter;
     target = Math.round(Math.min(xBet, potCap));
   } else {
@@ -129,13 +130,13 @@ function canRaiseWithinBudget(ctx: DecisionContext, capTarget: number): boolean 
 
 /**
  * A single bet-sizing distribution used for BOTH value bets and bluffs, so a
- * bluff is not betrayed by an unusual size. Mostly half-to-three-quarter pot,
- * a touch larger on wet boards, with the occasional (rare) overbet.
+ * bluff is not betrayed by an unusual size. Real cash c-bets are mostly
+ * third-to-two-thirds pot (a touch larger on wet boards); overbets are rare.
  */
 function pickBetSize(aggression: number, wet: number, rng: Rng): number {
-  let f = 0.45 + aggression * 0.2 + wet * 0.12;
-  if (rng() < 0.06) f += 0.45; // rare overbet for balance
-  return Math.min(1.2, Math.max(0.33, f + (rng() - 0.5) * 0.1));
+  let f = 0.35 + aggression * 0.15 + wet * 0.15;
+  if (rng() < 0.04) f += 0.4; // rare overbet for balance
+  return Math.min(1.0, Math.max(0.3, f + (rng() - 0.5) * 0.1));
 }
 
 function thinkTime(rng: Rng, tough: boolean): number {
@@ -232,7 +233,7 @@ function decidePreflop(
   const raiseThresh = 1 - raiseRange;
 
   const reason = [`pct=${pct.toFixed(2)}`, `playR=${playRange.toFixed(2)}`, `raiseR=${raiseRange.toFixed(2)}`];
-  const openSize = (canCheck ? 0.85 : 1.05) + rng() * 0.4;
+  const openSize = (canCheck ? 0.7 : 0.9) + rng() * 0.3;
   // Only ever shove pre-flop when genuinely short-stacked; otherwise keep raises
   // to a normal size (humans don't open-jam 100bb deep).
   const allowAllIn = isShortStack(ctx);

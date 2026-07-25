@@ -9,7 +9,7 @@ import { updateHeroProfile, emptyHeroProfile } from '../ai/profile';
 import type { DecisionContext, HeroProfile } from '../ai/types';
 import { computeHeroAnalysis, computeFoldOutcome, type HeroAnalysis } from '../utils/analysis';
 import { sound, setMuted } from '../utils/sound';
-import { setDisplayBlindLevel, formatSigned } from '../utils/format';
+import { setDisplayBlindLevel, setDisplayChipRatio, formatSigned } from '../utils/format';
 import {
   type Settings,
   type Stats,
@@ -24,6 +24,7 @@ import { loadPersisted, savePersisted } from './persist';
 const persisted = loadPersisted();
 setMuted(!persisted.settings.sound);
 setDisplayBlindLevel(persisted.settings.blindLevel);
+setDisplayChipRatio(persisted.settings.chipRatio ?? 1);
 
 let aiTimer: ReturnType<typeof setTimeout> | null = null;
 let nextHandTimer: ReturnType<typeof setTimeout> | null = null;
@@ -231,6 +232,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const settings = { ...get().settings, ...patch };
     setMuted(!settings.sound);
     setDisplayBlindLevel(settings.blindLevel);
+    setDisplayChipRatio(settings.chipRatio ?? 1);
     set({ settings });
     persistNow({ ...get(), settings } as GameStore);
   },

@@ -53,6 +53,21 @@ export function SettingsPanel({ settings, onChange, showTableNote }: Props) {
         <p className="mt-1 text-xs text-slate-500">买入金额随大盲级别换算（深度分别为 50 / 100 / 150 / 200 BB）。</p>
       </Field>
 
+      <Field label="筹码显示">
+        <div className="flex gap-1">
+          {[1, 10, 20].map((r) => (
+            <Choice key={r} active={(settings.chipRatio ?? 1) === r} onClick={() => onChange({ chipRatio: r })}>
+              {r === 1 ? '现金 ($)' : `${r}:1 筹码`}
+            </Choice>
+          ))}
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          {(settings.chipRatio ?? 1) === 1
+            ? '直接以现金金额显示。'
+            : `像真实牌局用筹码：1 大盲 = ${settings.chipRatio} 筹码（价值 $${settings.blindLevel}）。`}
+        </p>
+      </Field>
+
       <Field label="难度">
         <div className="flex gap-1">
           {(['easy', 'medium', 'hard'] as Difficulty[]).map((d) => (
