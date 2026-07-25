@@ -33,21 +33,24 @@ export function SettingsPanel({ settings, onChange, showTableNote }: Props) {
         <div className="flex gap-1">
           {[0.5, 1, 2, 5].map((lvl) => (
             <Choice key={lvl} active={settings.blindLevel === lvl} onClick={() => onChange({ blindLevel: lvl })}>
-              {lvl}
+              ${lvl}
             </Choice>
           ))}
         </div>
-        <p className="mt-1 text-xs text-slate-500">小盲为大盲的一半。起始筹码 {settings.startingStackBB} BB。</p>
+        <p className="mt-1 text-xs text-slate-500">
+          小盲为大盲的一半。当前买入 ${settings.startingStackBB * settings.blindLevel}（{settings.startingStackBB} BB）。
+        </p>
       </Field>
 
-      <Field label="起始筹码 (BB)" note={showTableNote ? '下桌生效' : undefined}>
+      <Field label="买入（起始现金）" note={showTableNote ? '下桌生效' : undefined}>
         <div className="flex gap-1">
           {[50, 100, 150, 200].map((s) => (
             <Choice key={s} active={settings.startingStackBB === s} onClick={() => onChange({ startingStackBB: s })}>
-              {s}
+              ${s * settings.blindLevel}
             </Choice>
           ))}
         </div>
+        <p className="mt-1 text-xs text-slate-500">买入金额随大盲级别换算（深度分别为 50 / 100 / 150 / 200 BB）。</p>
       </Field>
 
       <Field label="难度">

@@ -37,11 +37,16 @@ function isShortStack(ctx: DecisionContext): boolean {
 }
 
 /**
- * Size a bet/raise as a fraction of the pot with cash-game discipline: real
- * players protect their stack, so all-in only happens at a genuine commit spot
- * (`allowAllIn`, i.e. short stack / low SPR) or when the min-raise rules force
- * it. Deep-stacked bets are capped well below all-in; big pots get built over
- * multiple streets and raise wars, not by open-jamming.
+ * Size a bet/raise with cash-game discipline.
+ *
+ * - Opening bet (nothing to call): a fraction of the pot (1/3..~pot).
+ * - Raise (facing a bet): sized RELATIVE TO THE BET — raise to ~2.2–3.2× the
+ *   current bet, additionally capped by a pot-fraction raise. This is how cash
+ *   players actually size (open 2.5–3.5bb, 3-bet ~3× the open, 4-bet ~2.3×…);
+ *   the previous "fraction of the (already inflated) pot" rule compounded each
+ *   round of a raise war and produced absurd 50–100bb jumps.
+ * - All-in only at a genuine commit spot (`allowAllIn`, SPR ≤ 1) or when forced
+ *   by min-raise rules; deep stacks always keep chips behind.
  */
 function sizeRaise(
   ctx: DecisionContext,
@@ -52,8 +57,20 @@ function sizeRaise(
   const currentLevel = ctx.streetCommitted + ctx.toCall;
   const potAfterCall = ctx.potBefore + ctx.toCall;
   const jitter = 0.9 + rng() * 0.2;
-  const raiseBy = Math.max(ctx.bigBlind, Math.round(potAfterCall * fraction * jitter));
-  let target = Math.max(currentLevel + raiseBy, ctx.minRaiseTo);
+
+  let target: number;
+  if (ctx.toCall > 0 && currentLevel > 0) {
+    // Facing a bet: raise to a standard multiple of the bet, never beyond a
+    // pot-fraction raise on top of a call.
+    const xBet = currentLevel * (2.2 + rng() * 1.0);
+    const potCap = currentLevel + potAfterCall * Math.max(fraction, 0.5) * jitter;
+    target = Math.round(Math.min(xBet, potCap));
+  } else {
+    // Opening bet: fraction of the pot.
+    const betBy = Math.max(ctx.bigBlind, Math.round(potAfterCall * fraction * jitter));
+    target = currentLevel + betBy;
+  }
+  target = Math.max(target, ctx.minRaiseTo);
 
   if (target >= ctx.maxRaiseTo) return { amount: ctx.maxRaiseTo, allIn: true };
   if (allowAllIn && target >= ctx.maxRaiseTo * 0.9) {
