@@ -225,6 +225,61 @@ describe('AI sizing realism (all-in discipline)', () => {
     expect(allins).toBeLessThanOrEqual(2); // deep stacks don't spam jams
   });
 
+  it('never open-jams a monster when deep (cash-game pot building)', () => {
+    // Nut-ish hand, no bet to face, deep stack: real players bet, not shove.
+    let allins = 0;
+    const n = 30;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: aggressive,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards('Ah Ad') as [Card, Card],
+          board: parseCards('As 7c 2d'),
+          street: 'flop',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 20,
+          stack: 400,
+          streetCommitted: 0,
+          minRaiseTo: 4,
+          maxRaiseTo: 400,
+        }),
+        rng: seeded(s + 500),
+        iterations: 150,
+      });
+      if (d.action === 'allin') allins++;
+    }
+    expect(allins).toBe(0);
+  });
+
+  it('hard difficulty also avoids deep shoves facing a bet', () => {
+    let allins = 0;
+    const n = 30;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: aggressive,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: false,
+          toCall: 10,
+          potBefore: 20,
+          stack: 400,
+          streetCommitted: 0,
+          minRaiseTo: 20,
+          maxRaiseTo: 400,
+        }),
+        rng: seeded(s + 600),
+        iterations: 150,
+      });
+      if (d.action === 'allin') allins++;
+    }
+    expect(allins).toBe(0);
+  });
+
   it('still shoves when short-stacked (low SPR commit)', () => {
     let allins = 0;
     const n = 30;
