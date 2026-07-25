@@ -9,6 +9,7 @@ import { SettingsPanel } from './ui/SettingsPanel';
 import { HandReviewPanel } from './ui/HandReviewPanel';
 import { DocsModal } from './ui/DocsModal';
 import { OnlineRoot } from './ui/online/OnlineRoot';
+import { formatSigned } from './utils/format';
 
 export default function App() {
   const game = useGameStore((s) => s.game);
@@ -67,7 +68,7 @@ function StartScreen({ onOpenDocs, onGoOnline }: { onOpenDocs: () => void; onGoO
         </button>
         {stats.handsPlayed > 0 && (
           <p className="mt-3 text-center text-xs text-slate-500">
-            历史：已玩 {stats.handsPlayed} 手，累计盈亏 {(stats.netChips / 2).toFixed(1)} BB（已保存）
+            历史：已玩 {stats.handsPlayed} 手，累计盈亏 {formatSigned(stats.netChips)}（已保存）
           </p>
         )}
       </div>

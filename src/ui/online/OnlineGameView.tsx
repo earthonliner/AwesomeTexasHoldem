@@ -5,6 +5,7 @@ import { PokerTable } from '../PokerTable';
 import { ActionBar } from '../ActionBar';
 import { MathPanel } from '../MathPanel';
 import { computeHeroAnalysis } from '../../utils/analysis';
+import { formatBB, formatSigned } from '../../utils/format';
 
 function TurnTimer({ deadline }: { deadline: number }) {
   const [now, setNow] = useState(Date.now());
@@ -182,13 +183,12 @@ function PlayersPanel({ view }: { view: RoomView }) {
                 {s.kind === 'human' && !s.connected && <span className="text-rose-400">（掉线）</span>}
               </span>
               <span className="flex items-center gap-2">
-                <span className="font-mono text-yellow-300">{(s.stack / 2).toFixed(0)} BB</span>
+                <span className="font-mono text-yellow-300">{formatBB(s.stack)}</span>
                 <span
                   className={`font-mono text-xs ${s.net > 0 ? 'text-emerald-400' : s.net < 0 ? 'text-rose-400' : 'text-slate-500'}`}
                   title="本桌历史盈亏"
                 >
-                  {s.net >= 0 ? '+' : ''}
-                  {(s.net / 2).toFixed(1)}
+                  {formatSigned(s.net)}
                 </span>
               </span>
             </li>
