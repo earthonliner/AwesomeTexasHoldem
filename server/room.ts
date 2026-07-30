@@ -23,7 +23,6 @@ import {
 } from '../src/online/protocol';
 
 const AI_NAMES = ['Ava', 'Boris', 'Carmen', 'Dmitri', 'Elena', 'Frank', 'Gina', 'Hank'];
-const TURN_MS = 30_000; // human decision time limit
 const DISCONNECT_ACT_MS = 1_500; // grace before auto-acting for a disconnected human
 const HAND_REVIEW_MS = 4_500; // auto-advance delay when no human needs to ready up
 const READY_TIMEOUT_MS = 120_000; // safety net so an AFK player can't stall forever
@@ -39,6 +38,8 @@ interface ServerSeat {
   connected: boolean;
   sittingOut: boolean; // not dealt into the next hand
   net: number; // table-lifetime net P/L (chips), excluding rebuys
+  /** Top-up requested mid-hand; applied when the next hand starts. */
+  pendingTopUp: boolean;
 }
 
 export interface Connection {
@@ -112,6 +113,7 @@ export class Room {
     seat.sittingOut = false;
     seat.personality = undefined;
     seat.net = 0;
+    seat.pendingTopUp = false;
   }
 
   // ---------- message handling ----------
@@ -218,6 +220,7 @@ export class Room {
           connected: false,
           sittingOut: false,
           net: 0,
+          pendingTopUp: false,
         },
       );
       next[i].seatId = i;
@@ -278,6 +281,11 @@ export class Room {
     // Refresh AI personalities only once (table lifetime); rebuy busted seats.
     for (const s of this.seats) {
       if (s.kind === 'ai' && s.stack <= 0) s.stack = this.config.startingStackBB * BB_CHIPS;
+      // Apply queued human top-ups requested during the previous hand.
+      if (s.kind === 'human' && s.pendingTopUp) {
+        s.stack = Math.max(s.stack, this.config.startingStackBB * BB_CHIPS);
+        s.pendingTopUp = false;
+      }
       // Reconnected humans rejoin; still-disconnected humans keep sitting out.
       if (s.kind === 'human' && !s.connected) s.sittingOut = true;
       else if (s.kind === 'human' && s.connected && s.stack > 0) s.sittingOut = false;
@@ -353,10 +361,9 @@ export class Room {
     } else if (!seat.connected) {
       // Disconnected human: auto check/fold shortly.
       this.actionTimer = setTimeout(() => this.autoAct(idx), DISCONNECT_ACT_MS);
-    } else {
-      this.turnDeadline = Date.now() + TURN_MS;
-      this.actionTimer = setTimeout(() => this.autoAct(idx), TURN_MS);
     }
+    // Connected human: no turn timeout — players take as long as they need
+    // (auto-fold on timeout was removed by request; only disconnects auto-act).
     this.broadcast();
   }
 
@@ -454,15 +461,29 @@ export class Room {
     }
   }
 
+  /**
+   * Rebuy / top-up: allowed ANY time the stack is below the buy-in. Between
+   * hands it applies immediately; during a live hand it is queued and applied
+   * when the next hand starts (cash-game "top up next hand" rule — a stack
+   * cannot change mid-hand).
+   */
   private onRebuy(clientId: string): void {
     const seat = this.seats.find((s) => s.clientId === clientId);
-    if (seat && seat.stack <= 0) {
-      seat.stack = this.config.startingStackBB * BB_CHIPS;
+    if (!seat || seat.kind !== 'human') return;
+    const buyIn = this.config.startingStackBB * BB_CHIPS;
+    if (seat.stack >= buyIn) return;
+
+    const betweenHands = this.phase === 'lobby' || this.handOver || this.waitingForPlayers || !this.game;
+    if (betweenHands) {
+      seat.stack = buyIn;
       seat.sittingOut = false;
+      seat.pendingTopUp = false;
       // If the table was paused waiting for players, this rebuy may resume it.
       if (this.phase === 'playing' && this.waitingForPlayers && this.activeSeats().length >= 2) {
         this.startHand(false);
       }
+    } else {
+      seat.pendingTopUp = true;
     }
   }
 
@@ -521,6 +542,7 @@ export class Room {
       connected: s.connected,
       stack: s.stack,
       net: s.net,
+      pendingTopUp: s.pendingTopUp,
     }));
   }
 

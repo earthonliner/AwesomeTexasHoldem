@@ -53,6 +53,14 @@ export function Lobby({ view, onExit }: { view: RoomView; onExit: () => void }) 
             render={(v) => DIFF_LABEL[v]}
             onPick={(v) => setConfig({ difficulty: v })}
           />
+          <ConfigChoiceMoney
+            label="筹码显示"
+            disabled={!isHost}
+            value={view.config.chipRatio ?? 1}
+            options={[1, 10, 20]}
+            render={(v) => (v === 1 ? '现金($)' : `${v}:1`)}
+            onPick={(v) => setConfig({ chipRatio: v })}
+          />
         </div>
       </div>
 

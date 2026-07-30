@@ -7,6 +7,9 @@ export interface TableConfig {
   seatCount: number;
   blindLevel: number;
   startingStackBB: number;
+  /** Chips-per-big-blind display ratio (1 = show $, 10/20 = show chips). Shared
+   * by the whole table so every player sees identical amounts. */
+  chipRatio: number;
   difficulty: Difficulty;
 }
 
@@ -20,6 +23,8 @@ export interface SeatView {
   stack: number;
   /** Table-lifetime net profit/loss (chips), excluding rebuys. */
   net: number;
+  /** A top-up was requested mid-hand and will apply next hand. */
+  pendingTopUp: boolean;
 }
 
 export interface RoomView {
@@ -68,6 +73,7 @@ export const DEFAULT_TABLE_CONFIG: TableConfig = {
   seatCount: 6,
   blindLevel: 1,
   startingStackBB: 100,
+  chipRatio: 1,
   difficulty: 'medium',
 };
 
