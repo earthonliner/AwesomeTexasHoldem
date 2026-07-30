@@ -6,6 +6,7 @@ import { ActionBar } from '../ActionBar';
 import { MathPanel } from '../MathPanel';
 import { computeHeroAnalysis } from '../../utils/analysis';
 import { formatBB, formatSigned } from '../../utils/format';
+import { BB_CHIPS } from '../../engine/gameTypes';
 
 function TurnTimer({ deadline }: { deadline: number }) {
   const [now, setNow] = useState(Date.now());
@@ -40,6 +41,12 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
   // Still contesting the current hand (e.g. all-in) -> don't offer a rebuy yet.
   const liveInHand = !view.handOver && !!youGame && !youGame.folded && !youGame.sittingOut;
   const needRebuy = !!youSeatView && youSeatView.kind === 'human' && seatStack <= 0 && !liveInHand;
+
+  // Anytime top-up: available whenever the stack is below the buy-in. Mid-hand
+  // requests are queued by the server and applied at the next hand.
+  const buyIn = view.config.startingStackBB * BB_CHIPS;
+  const canTopUp = !!youSeatView && youSeatView.kind === 'human' && seatStack < buyIn && !needRebuy;
+  const topUpPending = !!youSeatView?.pendingTopUp;
 
   const analysis = useMemo(
     () => (isYourTurn ? computeHeroAnalysis(game, 800) : null),
@@ -80,6 +87,20 @@ export function OnlineGameView({ view, onExit }: { view: RoomView; onExit: () =>
           ) : null}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          {canTopUp &&
+            (topUpPending ? (
+              <span className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm text-emerald-300" title="下一手开始时补至买入额">
+                已申请补码 ✓
+              </span>
+            ) : (
+              <button
+                onClick={rebuy}
+                className="rounded-lg bg-emerald-700 px-3 py-1.5 text-sm font-semibold hover:bg-emerald-600"
+                title={`补码至买入额 ${formatBB(buyIn)}（若在牌局中，下一手生效）`}
+              >
+                补码
+              </button>
+            ))}
           {view.isHost && (
             <button onClick={backToLobby} className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700">
               返回大厅
