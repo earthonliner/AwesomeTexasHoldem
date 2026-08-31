@@ -8,8 +8,9 @@ export function emptyHeroProfile(): HeroProfile {
     pfr: 0.15,
     foldToSteal: 0.5,
     aggression: 0.5,
-    bluffCaught: 0.1,
+    bluffCaught: 0.3,
     wentToShowdown: 0.3,
+    foldToCbet: 0.5,
     counters: {
       handsDealt: 0,
       voluntaryActions: 0,
@@ -19,17 +20,34 @@ export function emptyHeroProfile(): HeroProfile {
       aggressiveActions: 0,
       passiveActions: 0,
       showdowns: 0,
+      cbetFaced: 0,
+      cbetFolded: 0,
+      riverBetsShown: 0,
+      riverBetsWeak: 0,
+      riverBigShown: 0,
+      riverBigWeak: 0,
+      riverSmallShown: 0,
+      riverSmallWeak: 0,
     },
   };
 }
 
-interface HandSummary {
+export interface HandSummary {
   heroId: number;
   actions: ActionRecord[];
   /** Whether the hero faced a single late-position open (a "steal" spot). */
   facedSteal: boolean;
   heroFoldedToSteal: boolean;
   heroReachedShowdown: boolean;
+  /** Hero faced a flop c-bet from the pre-flop aggressor. */
+  facedCbet?: boolean;
+  heroFoldedToCbet?: boolean;
+  /**
+   * Hero bet/raised the river AND the hand reached showdown: records whether
+   * the bet was big (> ~55% pot) and whether the shown hand was weak (lost) —
+   * used for the river-honesty and bet-size-tell reads.
+   */
+  riverBetShown?: { big: boolean; weak: boolean } | null;
 }
 
 /**
@@ -69,6 +87,21 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
     if (summary.heroFoldedToSteal) c.stealFacedFolds += 1;
   }
   if (summary.heroReachedShowdown) c.showdowns += 1;
+  if (summary.facedCbet) {
+    c.cbetFaced += 1;
+    if (summary.heroFoldedToCbet) c.cbetFolded += 1;
+  }
+  if (summary.riverBetShown) {
+    c.riverBetsShown += 1;
+    if (summary.riverBetShown.weak) c.riverBetsWeak += 1;
+    if (summary.riverBetShown.big) {
+      c.riverBigShown += 1;
+      if (summary.riverBetShown.weak) c.riverBigWeak += 1;
+    } else {
+      c.riverSmallShown += 1;
+      if (summary.riverBetShown.weak) c.riverSmallWeak += 1;
+    }
+  }
 
   const ratio = (num: number, den: number, fallback: number) => (den > 0 ? num / den : fallback);
 
@@ -78,8 +111,9 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
     pfr: ratio(c.preflopRaises, c.handsDealt, profile.pfr),
     foldToSteal: ratio(c.stealFacedFolds, c.stealFaced, profile.foldToSteal),
     aggression: ratio(c.aggressiveActions, c.aggressiveActions + c.passiveActions, profile.aggression),
-    bluffCaught: profile.bluffCaught,
+    bluffCaught: ratio(c.riverBetsWeak, c.riverBetsShown, profile.bluffCaught),
     wentToShowdown: ratio(c.showdowns, c.handsDealt, profile.wentToShowdown),
+    foldToCbet: ratio(c.cbetFolded, c.cbetFaced, profile.foldToCbet),
     counters: c,
   };
 }

@@ -154,6 +154,12 @@ export interface RangeEquityOptions {
    * (it beats the bluffs) instead of ~0% against a value-only range.
    */
   bluffShare?: number;
+  /**
+   * How many of the opponents are passive CALLERS rather than the bettor.
+   * Callers hold a capped range — decent hands below the raising range (their
+   * strongest holdings would have raised) — which matters multiway.
+   */
+  cappedCallers?: number;
 }
 
 export interface RangeEquityResult extends EquityResult {
@@ -201,6 +207,16 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     bluffPool = combos.slice(combos.length - bluffCount).map((c) => c.cards);
   }
 
+  // Caller range: capped just below the raising range (their nut combos would
+  // have raised, so callers hold medium-strength hands).
+  const cappedCallers = Math.min(Math.max(0, opts.cappedCallers ?? 0), Math.max(0, opponents - 1));
+  let callerPool: [Card, Card][] = [];
+  if (cappedCallers > 0) {
+    const span = Math.max(opponents * 6, Math.round(0.35 * combos.length));
+    callerPool = combos.slice(valueCount, Math.min(combos.length, valueCount + span)).map((c) => c.cards);
+    if (callerPool.length === 0) callerPool = valuePool;
+  }
+
   const needBoard = 5 - board.length;
   const knownIds = known.map(cardId);
 
@@ -234,6 +250,11 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     const oppHands: [Card, Card][] = [];
 
     for (let o = 0; o < opponents; o++) {
+      // The last `cappedCallers` opponents are passive callers with capped ranges.
+      if (o >= opponents - cappedCallers) {
+        oppHands.push(drawFrom(callerPool, usedIds));
+        continue;
+      }
       const useBluff = bluffShare > 0 && bluffPool.length > 0 && rng() < bluffShare;
       oppHands.push(drawFrom(useBluff ? bluffPool : valuePool, usedIds));
     }

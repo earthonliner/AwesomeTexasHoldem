@@ -11,6 +11,7 @@ import { BB_CHIPS } from '../src/engine/gameTypes';
 import type { Card, PlayerAction } from '../src/engine/types';
 import { generatePersonality } from '../src/ai/personality';
 import { decide } from '../src/ai/decision';
+import { deriveLineContext } from '../src/ai/line';
 import type { Personality, DecisionContext } from '../src/ai/types';
 import { redactGameStateFor } from '../src/online/redact';
 import {
@@ -68,6 +69,9 @@ export class Room {
   private handStartStacks: Record<number, number> = {};
   /** clientIds of humans who clicked "下一手" during the between-hand pause. */
   private readyIds = new Set<string>();
+  /** Per-hand bluff counts and rolling aggression image per AI seat. */
+  private aiBluffCounts: Record<number, number> = {};
+  private aiImages: Record<number, number> = {};
 
   private actionTimer: ReturnType<typeof setTimeout> | null = null;
   private nextHandTimer: ReturnType<typeof setTimeout> | null = null;
@@ -326,6 +330,7 @@ export class Room {
     this.game = startHand(cfg, seatInit, this.buttonSeatId, (this.game?.handNumber ?? 0) + 1, Math.random);
     this.handOver = false;
     this.lastResultText = '';
+    this.aiBluffCounts = {};
     this.advanceTurn();
   }
 
@@ -381,6 +386,7 @@ export class Room {
     const delay = Math.min(1600, Math.max(450, decision.thinkMs));
     this.actionTimer = setTimeout(() => {
       if (!this.game || this.game.toAct !== idx) return;
+      if (decision.isBluff) this.aiBluffCounts[seat.seatId] = (this.aiBluffCounts[seat.seatId] ?? 0) + 1;
       this.apply({ type: decision.action, amount: decision.amount });
     }, delay);
   }
@@ -421,6 +427,20 @@ export class Room {
     this.turnDeadline = null;
     this.lastResultText = this.buildResultText(game);
     this.readyIds.clear();
+
+    // Update each AI's rolling aggression image for the dynamic-bluff model.
+    for (const p of game.players) {
+      if (this.seats[p.id]?.kind !== 'ai' || p.sittingOut) continue;
+      let agg = 0;
+      let pas = 0;
+      for (const a of game.history) {
+        if (a.playerId !== p.id) continue;
+        if (a.type === 'bet' || a.type === 'raise' || a.type === 'allin') agg++;
+        if (a.type === 'call' || a.type === 'check') pas++;
+      }
+      const handRatio = agg + pas > 0 ? agg / (agg + pas) : 0.3;
+      this.aiImages[p.id] = 0.65 * (this.aiImages[p.id] ?? 0.3) + 0.35 * handRatio;
+    }
 
     // The next hand starts only once every active human clicks "下一手". If no
     // human needs to ready up (all-AI table), auto-advance after a short pause.
@@ -508,7 +528,9 @@ export class Room {
       maxRaiseTo: legal.maxRaiseTo,
       streetCommitted: p.streetCommitted,
       totalCommitted: p.totalCommitted,
-      recentImage: 0.3,
+      recentImage: this.aiImages[p.id] ?? 0.3,
+      ...deriveLineContext(game, idx),
+      myBluffsThisHand: this.aiBluffCounts[p.id] ?? 0,
     };
   }
 

@@ -137,6 +137,20 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
     expect(multi).toBeLessThan(hu); // bluffs shrink multiway
   });
 
+  it('capped callers give the hero more equity than uncapped tight opponents', () => {
+    // Vs a bettor + 1 caller: modelling the caller as capped (medium strength)
+    // must credit the hero more equity than assuming both hold top-range hands.
+    const heroCards = hero('Ts Td');
+    const board = parseCards('8c 5d 2h');
+    const bothTight = estimateEquityVsRange({
+      heroCards, board, opponents: 2, iterations: 3000, rng: seeded(31), rangeFraction: 0.25,
+    });
+    const oneCapped = estimateEquityVsRange({
+      heroCards, board, opponents: 2, iterations: 3000, rng: seeded(31), rangeFraction: 0.25, cappedCallers: 1,
+    });
+    expect(oneCapped.equity).toBeGreaterThan(bothTight.equity + 0.03);
+  });
+
   it('chooses a tighter range when facing a large bet', () => {
     const noBet = estimateRangeFraction({ street: 'river', facingBet: false, toCall: 0, pot: 20 });
     const smallBet = estimateRangeFraction({ street: 'river', facingBet: true, toCall: 5, pot: 20 });

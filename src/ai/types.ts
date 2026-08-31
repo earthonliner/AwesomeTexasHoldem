@@ -53,6 +53,18 @@ export interface DecisionContext {
   totalCommitted: number;
   /** AI's own recent aggressive image, 0..1 (higher = looks aggressive). */
   recentImage: number;
+
+  // ---- Hand story-line (optional; derived from the action history) ----
+  /** This player made the last aggressive action on the previous street. */
+  wasAggressorLastStreet?: boolean;
+  /** How many bluffs this player has already fired in this hand. */
+  myBluffsThisHand?: number;
+  /** The current street's bettor checked earlier this street (check-raise). */
+  facingCheckRaise?: boolean;
+  /** The current street's last aggressor is the human hero (single-player). */
+  aggressorIsHero?: boolean;
+  /** false when the pot was limped pre-flop (weak, capped opponent ranges). */
+  preflopRaised?: boolean;
 }
 
 export interface AIDecision {
@@ -77,8 +89,11 @@ export interface HeroProfile {
   pfr: number;
   foldToSteal: number;
   aggression: number;
+  /** Share of the hero's shown-down river bets that were weak (bluff proxy). */
   bluffCaught: number;
   wentToShowdown: number;
+  /** How often the hero folds to a flop continuation bet. */
+  foldToCbet: number;
   /** Raw counters used to derive the smoothed rates above. */
   counters: {
     handsDealt: number;
@@ -89,5 +104,14 @@ export interface HeroProfile {
     aggressiveActions: number;
     passiveActions: number;
     showdowns: number;
+    cbetFaced: number;
+    cbetFolded: number;
+    /** Hero river bets that reached showdown, split by bet size (size tell). */
+    riverBetsShown: number;
+    riverBetsWeak: number;
+    riverBigShown: number;
+    riverBigWeak: number;
+    riverSmallShown: number;
+    riverSmallWeak: number;
   };
 }

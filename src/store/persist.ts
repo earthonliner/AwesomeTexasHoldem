@@ -18,10 +18,16 @@ export function loadPersisted(): PersistedState {
     const raw = localStorage.getItem(KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<PersistedState>;
+    // Merge the stored profile over the empty template so profiles saved by
+    // older versions gain any newly-added fields/counters with sane defaults.
+    const empty = emptyHeroProfile();
+    const heroProfile = parsed.heroProfile
+      ? { ...empty, ...parsed.heroProfile, counters: { ...empty.counters, ...parsed.heroProfile.counters } }
+      : empty;
     return {
       settings: { ...DEFAULT_SETTINGS, ...(parsed.settings as Settings) },
       stats: { ...DEFAULT_STATS, ...(parsed.stats as Stats) },
-      heroProfile: parsed.heroProfile ?? emptyHeroProfile(),
+      heroProfile,
       history: (parsed.history ?? []).slice(-MAX_HISTORY),
     };
   } catch {
