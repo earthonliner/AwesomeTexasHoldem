@@ -459,6 +459,110 @@ describe('stake budgeting (single-hand investment discipline)', () => {
   });
 });
 
+describe('hand story-line: barrel planning', () => {
+  const air = parseCards('7s 2d') as [Card, Card];
+  const board = parseCards('Kh 9c 4d 6s'); // turn, we c-bet flop as a bluff
+
+  function betRate(withStory: boolean): number {
+    let bets = 0;
+    const n = 40;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: { ...tag, bluff: 0.15 },
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: air,
+          board,
+          street: 'turn',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 24,
+          wasAggressorLastStreet: withStory,
+          myBluffsThisHand: withStory ? 1 : 0,
+        }),
+        rng: seeded(s + 2000),
+        iterations: 120,
+      });
+      if (d.action === 'raise' || d.action === 'allin') bets++;
+    }
+    return bets / n;
+  }
+
+  it('continues a flop bluff on the turn far more often than an independent re-roll', () => {
+    const barrel = betRate(true);
+    const independent = betRate(false);
+    expect(barrel).toBeGreaterThan(independent + 0.15);
+    expect(barrel).toBeGreaterThan(0.4); // a real double-barrel plan
+  });
+});
+
+describe('action-line awareness: check-raise respect', () => {
+  const hand = parseCards('Ah 9d') as [Card, Card]; // top pair weak kicker
+  const board = parseCards('As 8c 3d');
+
+  function meanPerceivedEquity(checkRaised: boolean): number {
+    let sum = 0;
+    const n = 25;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: hand,
+          board,
+          street: 'flop',
+          canCheck: false,
+          toCall: 24,
+          potBefore: 36,
+          facingCheckRaise: checkRaised,
+        }),
+        rng: seeded(s + 2100),
+        iterations: 200,
+      });
+      // The decision trace starts with "eq=0.xx".
+      const m = /eq=([\d.]+)/.exec(d.reason);
+      sum += m ? Number(m[1]) : 0;
+    }
+    return sum / n;
+  }
+
+  it('rates the same hand lower against a check-raise (stronger range assumed)', () => {
+    const vsBet = meanPerceivedEquity(false);
+    const vsCheckRaise = meanPerceivedEquity(true);
+    expect(vsCheckRaise).toBeLessThan(vsBet - 0.04);
+  });
+});
+
+describe('budget mixing breaks the 4-bet nut tell', () => {
+  it('occasionally 4-bets a non-premium hand (rare, not never)', () => {
+    // ATs: budget tier normally blocks the re-raise; only the budget mix
+    // unlocks it, so raises here exist but stay a small minority.
+    const hole = parseCards('As Ts') as [Card, Card];
+    let raises = 0;
+    const n = 150;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          toCall: 20,
+          potBefore: 30,
+          streetCommitted: 0,
+          totalCommitted: 0,
+          minRaiseTo: 34,
+          maxRaiseTo: 400,
+          stack: 400,
+        }),
+        rng: seeded(s + 2200),
+      });
+      if (d.action === 'raise' || d.action === 'allin') raises++;
+    }
+    expect(raises).toBeGreaterThan(0); // the tell is broken…
+    expect(raises / n).toBeLessThan(0.3); // …but it stays a bluff frequency
+  });
+});
+
 describe('generatePersonality', () => {
   it('easy personalities have no position awareness and low bluff', () => {
     for (let s = 0; s < 6; s++) {

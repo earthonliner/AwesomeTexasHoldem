@@ -163,27 +163,61 @@ interface Exploit {
   valueLean: number;
   /** Prefer trapping (call, let them keep barreling) vs an aggressive hero. */
   trapMore: boolean;
+  /** Multipliers on the assumed bluff share of the HERO's bets, calibrated from
+   * showdown evidence (river honesty), optionally split by bet size. */
+  bluffReadAll: number;
+  bluffReadBig: number;
+  bluffReadSmall: number;
 }
+
+/** Blend an exploit multiplier toward neutral (1) by sample confidence. */
+const blend = (raw: number, weight: number) => 1 + (raw - 1) * weight;
 
 /**
  * Exploitative adjustments against the observed human style. Medium and hard
  * are equally sharp readers (medium is the "realistic cash game" variant, hard
- * the more aggressive one); easy doesn't adjust at all.
+ * the more aggressive one); easy doesn't adjust at all. All reads are weighted
+ * by sample size, so early noise fades toward neutral instead of hard cutoffs.
  */
 function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: HeroProfile): Exploit {
-  const base: Exploit = { bluffMult: 1, stealBonus: 0, valueLean: 0, trapMore: false };
-  if (difficulty === 'easy' || !profile || profile.hands <= 15) return base;
+  const base: Exploit = {
+    bluffMult: 1,
+    stealBonus: 0,
+    valueLean: 0,
+    trapMore: false,
+    bluffReadAll: 1,
+    bluffReadBig: 1,
+    bluffReadSmall: 1,
+  };
+  if (difficulty === 'easy' || !profile || profile.hands <= 8) return base;
+  const weight = clamp((profile.hands - 8) / 40, 0, 1);
 
   if (profile.foldToSteal > 0.6 && ctx.positionFactor > 0.55) {
-    base.stealBonus = (profile.foldToSteal - 0.6) * 0.6;
+    base.stealBonus = (profile.foldToSteal - 0.6) * 0.6 * weight;
   }
-  if (profile.foldToSteal > 0.55) base.bluffMult *= 1.3;
-  if (profile.wentToShowdown > 0.45) base.bluffMult *= 0.6; // sticky -> bluff less
+  if (profile.foldToSteal > 0.55) base.bluffMult *= blend(1.3, weight);
+  if (profile.wentToShowdown > 0.45) base.bluffMult *= blend(0.6, weight); // sticky -> bluff less
   if (profile.aggression > 0.6) {
-    base.bluffMult *= 0.8;
-    base.valueLean += 0.05; // call down lighter vs maniacs
-    base.trapMore = true;
+    base.bluffMult *= blend(0.8, weight);
+    base.valueLean += 0.05 * weight; // call down lighter vs maniacs
+    base.trapMore = weight > 0.3;
   }
+
+  // Hero folds to c-bets a lot -> barrel/bluff more (and vice versa).
+  base.bluffMult *= blend(1 + (profile.foldToCbet - 0.5) * 0.9, weight);
+
+  // River honesty: calibrate how much of the hero's betting range we assume is
+  // bluffs from actual showdown evidence, instead of a fixed formula.
+  const c = profile.counters;
+  const readScale = (weak: number, shown: number): number =>
+    shown >= 4 ? clamp(weak / shown / 0.33, 0.35, 1.8) : NaN;
+  const all = readScale(c.riverBetsWeak, c.riverBetsShown);
+  if (!Number.isNaN(all)) base.bluffReadAll = blend(all, weight);
+  const big = readScale(c.riverBigWeak, c.riverBigShown);
+  base.bluffReadBig = Number.isNaN(big) ? base.bluffReadAll : blend(big, weight);
+  const small = readScale(c.riverSmallWeak, c.riverSmallShown);
+  base.bluffReadSmall = Number.isNaN(small) ? base.bluffReadAll : blend(small, weight);
+
   return base;
 }
 
@@ -238,7 +272,12 @@ function decidePreflop(
   // to a normal size (humans don't open-jam 100bb deep).
   const allowAllIn = isShortStack(ctx);
   // Stake budget: e.g. don't 4-bet a medium hand into a 30bb pre-flop pot.
-  const cap = budgetCapTarget(ctx, preflopBudget(pct, bigBlind));
+  // A small random "budget mix" occasionally lifts the cap so strong-but-not-
+  // premium hands can 3-bet/4-bet bluff — otherwise the budget cutoffs become a
+  // perfect tell (big pre-flop raise == always QQ+/AK).
+  let budget = preflopBudget(pct, bigBlind);
+  if (difficulty !== 'easy' && Number.isFinite(budget) && rng() < 0.08) budget *= 2.2;
+  const cap = budgetCapTarget(ctx, budget);
   const mayRaise = canRaiseWithinBudget(ctx, cap);
 
   // Unraised pot (big-blind option or limped to us): raise strong, else check.
@@ -317,20 +356,32 @@ function decidePostflop(
     }).equity;
   } else {
     const facingBet = ctx.toCall > 0;
-    const rangeFraction = estimateRangeFraction({
+    let rangeFraction = estimateRangeFraction({
       street: ctx.street,
       facingBet,
       toCall: ctx.toCall,
       pot: ctx.potBefore,
     });
+    // Action-line awareness: a check-raise represents a much stronger range; a
+    // pot nobody raised pre-flop means wide, capped opponent ranges.
+    if (ctx.facingCheckRaise) rangeFraction *= 0.65;
+    if (ctx.preflopRaised === false) rangeFraction = Math.min(0.85, rangeFraction * 1.25);
+
     const wetness = boardWetness(ctx.board);
-    const fullBluffShare = estimateBluffShare({
+    let bluffShare = estimateBluffShare({
       facingBet,
       liveOpponents: Math.max(1, ctx.liveOpponents),
       wetness,
     });
-    // Medium and hard both read bettors' bluff share accurately.
-    const bluffShare = fullBluffShare;
+    if (ctx.facingCheckRaise) bluffShare *= 0.7;
+    // Showdown-calibrated read of the HUMAN's bluffing habits (size-aware):
+    // vs an honest human we stop paying off; vs a wild one we call down more.
+    if (facingBet && ctx.aggressorIsHero) {
+      const big = ctx.toCall > ctx.potBefore * 0.55;
+      bluffShare *= big ? exploit.bluffReadBig : exploit.bluffReadSmall;
+      bluffShare = clamp(bluffShare, 0, 0.6);
+    }
+
     eq = estimateEquityVsRange({
       heroCards: ctx.hole,
       board: ctx.board,
@@ -339,6 +390,9 @@ function decidePostflop(
       rng,
       rangeFraction,
       bluffShare,
+      // Multiway: only one opponent is the bettor; the rest hold capped
+      // calling ranges (their strongest combos would have raised).
+      cappedCallers: facingBet ? Math.max(0, ctx.liveOpponents - 1) : 0,
     }).equity;
   }
 
@@ -366,7 +420,11 @@ function decidePostflop(
   const betSize = pickBetSize(p.aggression, wet, rng);
   // Stake budget: a hand is only worth so much. Once this hand's investment
   // would exceed the strength-based budget, stop escalating (check/call/fold).
-  const cap = budgetCapTarget(ctx, investBudget(eq, ctx.bigBlind));
+  // A rare budget mix lets non-nut hands occasionally play a bigger pot so
+  // "still raising in a big pot" is not a 100% nut signal.
+  let budget = investBudget(eq, ctx.bigBlind);
+  if (skilled && Number.isFinite(budget) && rng() < 0.08) budget *= 2.2;
+  const cap = budgetCapTarget(ctx, budget);
   const mayRaise = canRaiseWithinBudget(ctx, cap);
 
   const reason = [`eq=${eq.toFixed(2)}`, `vt=${valueThresh.toFixed(2)}`, `bf=${bluffFreq.toFixed(2)}`];
@@ -384,6 +442,24 @@ function decidePostflop(
       }
       return mk('check', 0, rng, false, [...reason, 'slowplay-check']);
     }
+    // Barrel plan: if we bluffed as the aggressor on the previous street, keep
+    // telling the same story most of the time instead of independently
+    // re-rolling (independent sampling made "call one bet, take it away on the
+    // turn" a printing strategy for the human). High cards strengthen the
+    // story; the river barrel is rarer (it's the committal one).
+    const barreling =
+      skilled && !!ctx.wasAggressorLastStreet && (ctx.myBluffsThisHand ?? 0) > 0 && !ctx.facingCheckRaise;
+    if (barreling && mayRaise) {
+      const highBoard = ctx.board.some((c) => c.rank >= 13);
+      let barrelProb = (street === 'river' ? 0.4 : 0.6) + (highBoard ? 0.08 : 0);
+      barrelProb = clamp(barrelProb * exploit.bluffMult, 0, 0.72);
+      if (rng() < barrelProb) {
+        const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
+        return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'barrel']);
+      }
+      return mk('check', 0, rng, false, [...reason, 'barrel-giveup']);
+    }
+
     if (mayRaise && rng() < bluffFreq) {
       // Bluffs never shove off a deep stack (only when already short).
       const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);

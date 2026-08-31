@@ -5,6 +5,7 @@ import { BB_CHIPS } from '../engine/gameTypes';
 import { startHand as engineStartHand, applyAction, getLegalActions, totalPot, type SeatInit } from '../engine/game';
 import { generatePersonality, describePersonality } from '../ai/personality';
 import { decide } from '../ai/decision';
+import { deriveLineContext } from '../ai/line';
 import { updateHeroProfile, emptyHeroProfile } from '../ai/profile';
 import type { DecisionContext, HeroProfile } from '../ai/types';
 import { computeHeroAnalysis, computeFoldOutcome, type HeroAnalysis } from '../utils/analysis';
@@ -28,6 +29,11 @@ setDisplayChipRatio(persisted.settings.chipRatio ?? 1);
 
 let aiTimer: ReturnType<typeof setTimeout> | null = null;
 let nextHandTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Per-hand bluff counts and rolling aggression "image" per AI seat, feeding the
+// hand story-line (barrel plans) and the dynamic-bluff image adjustment.
+let aiBluffCounts: Record<number, number> = {};
+const aiImages: Record<number, number> = {};
 
 function clearTimers(): void {
   if (aiTimer) clearTimeout(aiTimer);
@@ -126,6 +132,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   newTable: () => {
     clearTimers();
+    aiBluffCounts = {};
+    for (const k of Object.keys(aiImages)) delete aiImages[Number(k)];
     const { settings } = get();
     const seats = buildSeats(settings);
     set({
@@ -171,6 +179,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       lastResultText: '',
       heroFoldedPreflop: false,
     });
+    aiBluffCounts = {};
     tick(set, get);
   },
 
@@ -315,6 +324,7 @@ function scheduleAI(set: SetFn, get: GetFn, idx: number): void {
   aiTimer = setTimeout(() => {
     const cur = get();
     if (!cur.game || cur.game.toAct !== idx) return;
+    if (decision.isBluff) aiBluffCounts[player.id] = (aiBluffCounts[player.id] ?? 0) + 1;
     playActionSound(decision.action, cur.settings.sound);
     const next = applyAction(cur.game, { type: decision.action, amount: decision.amount });
     set({ game: next, thinkingId: null });
@@ -346,7 +356,9 @@ function buildDecisionContext(game: GameState, idx: number): DecisionContext {
     maxRaiseTo: legal.maxRaiseTo,
     streetCommitted: p.streetCommitted,
     totalCommitted: p.totalCommitted,
-    recentImage: 0.3,
+    recentImage: aiImages[p.id] ?? 0.3,
+    ...deriveLineContext(game, idx),
+    myBluffsThisHand: aiBluffCounts[p.id] ?? 0,
   };
 }
 
@@ -414,6 +426,21 @@ function finalize(set: SetFn, get: GetFn): void {
   const heroProfile = updateHeroProfile(state.heroProfile, summarizeHeroHand(game, hero.id));
   const opponentStats = updateOpponentStats(state.opponentStats, game, hero.id);
 
+  // Update each AI's rolling aggression image (feeds dynamic bluff frequency:
+  // an AI that just showed a lot of aggression tones its bluffs down).
+  for (const p of game.players) {
+    if (p.isHero || p.sittingOut) continue;
+    let agg = 0;
+    let pas = 0;
+    for (const a of game.history) {
+      if (a.playerId !== p.id) continue;
+      if (a.type === 'bet' || a.type === 'raise' || a.type === 'allin') agg++;
+      if (a.type === 'call' || a.type === 'check') pas++;
+    }
+    const handRatio = agg + pas > 0 ? agg / (agg + pas) : 0.3;
+    aiImages[p.id] = 0.65 * (aiImages[p.id] ?? 0.3) + 0.35 * handRatio;
+  }
+
   const revealed = game.revealed.map((id) => {
     const gp = game.players.find((p) => p.id === id)!;
     const seat = state.seats.find((s) => s.id === id)!;
@@ -479,12 +506,48 @@ function summarizeHeroHand(game: GameState, heroId: number) {
   const heroPreflop = actions.filter((a) => a.playerId === heroId && a.street === 'preflop');
   const facedSteal = heroPreflop.some((a) => a.toCall > game.bigBlind);
   const heroFoldedToSteal = facedSteal && heroPreflop.some((a) => a.type === 'fold' && a.toCall > game.bigBlind);
+
+  // Fold-to-cbet: the pre-flop aggressor bet the flop, and the hero responded.
+  let facedCbet = false;
+  let heroFoldedToCbet = false;
+  let pfAggressor = -1;
+  for (const a of actions) {
+    if (a.street === 'preflop' && (a.type === 'raise' || a.type === 'allin')) pfAggressor = a.playerId;
+  }
+  if (pfAggressor >= 0 && pfAggressor !== heroId) {
+    const flop = actions.filter((a) => a.street === 'flop');
+    const cbetIdx = flop.findIndex((a) => a.playerId === pfAggressor && (a.type === 'bet' || a.type === 'raise' || a.type === 'allin'));
+    if (cbetIdx >= 0) {
+      const heroAfter = flop.slice(cbetIdx + 1).find((a) => a.playerId === heroId && a.toCall > 0);
+      if (heroAfter) {
+        facedCbet = true;
+        heroFoldedToCbet = heroAfter.type === 'fold';
+      }
+    }
+  }
+
+  // River honesty / size tell: the hero bet or raised the river and showed down.
+  let riverBetShown: { big: boolean; weak: boolean } | null = null;
+  if (game.revealed.includes(heroId)) {
+    const heroRiverBet = [...game.history]
+      .reverse()
+      .find((a) => a.street === 'river' && a.playerId === heroId && (a.type === 'bet' || a.type === 'raise' || a.type === 'allin'));
+    if (heroRiverBet) {
+      const big = heroRiverBet.amount > Math.max(1, heroRiverBet.potBefore) * 0.55;
+      const weak = !game.payouts.some((p) => p.playerId === heroId && p.amount > 0);
+      riverBetShown = { big, weak };
+    }
+  }
+
   return {
     heroId,
     actions,
     facedSteal,
     heroFoldedToSteal,
     heroReachedShowdown: game.revealed.includes(heroId),
+    facedCbet,
+    heroFoldedToCbet,
+    riverBetShown,
   };
 }
 
