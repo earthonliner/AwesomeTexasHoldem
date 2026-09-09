@@ -4,7 +4,7 @@ import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile } from './profile';
 import type { DecisionContext, Personality } from './types';
-import { parseCards } from '../engine/deck';
+import { parseCards, makeDeck, shuffle } from '../engine/deck';
 import type { Card } from '../engine/types';
 
 function seeded(seed: number): () => number {
@@ -662,5 +662,170 @@ describe('medium AI bluffs in a controlled, hard-to-read way', () => {
 
   it('bluffs no more often than hard difficulty in the same spot', () => {
     expect(bluffRate('medium')).toBeLessThanOrEqual(bluffRate('hard') + 0.05);
+  });
+});
+
+describe('cash-game defence vs an early-position open (hard)', () => {
+  // Random hands, random hard personalities: measure how often each seat
+  // continues (call or 3-bet) against a 3bb open in a 6-max game.
+  function continueRate(positionFactor: number, streetCommitted: number, toCall: number, seed: number): number {
+    const rng = seeded(seed);
+    let cont = 0;
+    const n = 300;
+    for (let i = 0; i < n; i++) {
+      const deck = shuffle(makeDeck(), rng);
+      const d = decide({
+        personality: generatePersonality('hard', rng),
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: [deck[0], deck[1]],
+          potBefore: 9,
+          toCall,
+          streetCommitted,
+          totalCommitted: streetCommitted,
+          positionFactor,
+          minRaiseTo: 12,
+          recentImage: 0.3,
+        }),
+        rng,
+      });
+      if (d.action !== 'fold') cont++;
+    }
+    return cont / n;
+  }
+
+  it('late position (CO/BTN) defends far more than middle position', () => {
+    const btn = continueRate(1, 0, 6, 11);
+    const co = continueRate(0.8, 0, 6, 12);
+    const mp = continueRate(0.4, 0, 6, 13);
+    expect(btn).toBeGreaterThan(0.3);
+    expect(co).toBeGreaterThan(0.25);
+    expect(btn).toBeGreaterThan(mp + 0.1);
+  });
+
+  it('the big blind defends by price (well over a third of hands)', () => {
+    const bb = continueRate(0.2, 2, 4, 14);
+    const sb = continueRate(0, 1, 5, 15);
+    expect(bb).toBeGreaterThan(0.35);
+    expect(bb).toBeGreaterThan(sb);
+  });
+
+  it('squeezes bigger with a premium when there are callers behind the raise', () => {
+    const aces = parseCards('As Ad') as [Card, Card];
+    let hu = 0;
+    let sq = 0;
+    let nHu = 0;
+    let nSq = 0;
+    for (let s = 0; s < 30; s++) {
+      const base = { hole: aces, toCall: 6, minRaiseTo: 12, positionFactor: 1, maxRaiseTo: 400, stack: 400 };
+      const a = decide({ personality: tag, difficulty: 'hard', ctx: ctx({ ...base, potBefore: 9 }), rng: seeded(s + 1) });
+      const b = decide({ personality: tag, difficulty: 'hard', ctx: ctx({ ...base, potBefore: 21 }), rng: seeded(s + 1) });
+      if (a.action === 'raise') { hu += a.amount; nHu++; }
+      if (b.action === 'raise') { sq += b.amount; nSq++; }
+    }
+    expect(nSq).toBeGreaterThan(0);
+    expect(sq / nSq).toBeGreaterThan(hu / nHu);
+  });
+});
+
+describe('positional & stack-depth play (hard)', () => {
+  const air = parseCards('7s 2d') as [Card, Card];
+  const board = parseCards('Kh 8c 3d'); // dry, checked to us
+
+  function stabRate(inPosition: boolean, villainDroveLastStreet: boolean): number {
+    let bets = 0;
+    const n = 60;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: air,
+          board,
+          street: 'turn',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 20,
+          positionFactor: inPosition ? 1 : 0,
+          villainWasAggressorLastStreet: villainDroveLastStreet,
+          wasAggressorLastStreet: false,
+          preflopRaised: true,
+        }),
+        rng: seeded(s + 3000),
+        iterations: 100,
+      });
+      if (d.action === 'raise') bets++;
+    }
+    return bets / n;
+  }
+
+  it('floats: stabs much more when the previous-street aggressor checks to it in position', () => {
+    const floatIp = stabRate(true, true);
+    const noStory = stabRate(true, false);
+    expect(floatIp).toBeGreaterThan(noStory + 0.15);
+    expect(floatIp).toBeGreaterThan(stabRate(false, true));
+  });
+
+  it('calls with a flush draw more often deep-stacked than shallow (implied odds)', () => {
+    const hole = parseCards('9h 8h') as [Card, Card];
+    const drawBoard = parseCards('Ah 5h 2c');
+    function callRate(stack: number): number {
+      let calls = 0;
+      const n = 40;
+      for (let s = 0; s < n; s++) {
+        const d = decide({
+          personality: tag,
+          difficulty: 'hard',
+          ctx: ctx({
+            hole,
+            board: drawBoard,
+            street: 'flop',
+            potBefore: 40,
+            toCall: 30,
+            stack,
+            maxRaiseTo: stack,
+            minRaiseTo: 60,
+            positionFactor: 1,
+            preflopRaised: true,
+          }),
+          rng: seeded(s + 4000),
+          iterations: 150,
+        });
+        if (d.action !== 'fold') calls++;
+      }
+      return calls / n;
+    }
+    expect(callRate(400)).toBeGreaterThanOrEqual(callRate(45));
+  });
+
+  it('a tight image makes bluffing more credible than an aggressive image', () => {
+    const base = ctx({ hole: air, board, street: 'flop', canCheck: true, toCall: 0, potBefore: 12, positionFactor: 0.8 });
+    const tight = dynamicBluffFrequency(tag, { ...base, recentImage: 0.05 });
+    const wild = dynamicBluffFrequency(tag, { ...base, recentImage: 0.7 });
+    expect(tight).toBeGreaterThan(wild);
+  });
+
+  it('polarises river sizing: nut value and bluffs bet big, thin value bets small', () => {
+    const riverBoard = parseCards('Kh 8c 3d 2s 9c');
+    const sizes = (hole: [Card, Card]) => {
+      const out: number[] = [];
+      for (let s = 0; s < 40; s++) {
+        const d = decide({
+          personality: tag,
+          difficulty: 'hard',
+          ctx: ctx({ hole, board: riverBoard, street: 'river', canCheck: true, toCall: 0, potBefore: 40, minRaiseTo: 2 }),
+          rng: seeded(s + 5000),
+          iterations: 150,
+        });
+        if (d.action === 'raise') out.push(d.amount / 40);
+      }
+      return out;
+    };
+    const nuts = sizes(parseCards('Ks Kd') as [Card, Card]);
+    const thin = sizes(parseCards('Kd 5d') as [Card, Card]);
+    const avg = (a: number[]) => a.reduce((x, y) => x + y, 0) / Math.max(1, a.length);
+    expect(nuts.length).toBeGreaterThan(0);
+    expect(thin.length).toBeGreaterThan(0);
+    expect(avg(nuts)).toBeGreaterThan(avg(thin) + 0.15);
   });
 });

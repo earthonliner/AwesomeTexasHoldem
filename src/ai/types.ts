@@ -57,6 +57,8 @@ export interface DecisionContext {
   // ---- Hand story-line (optional; derived from the action history) ----
   /** This player made the last aggressive action on the previous street. */
   wasAggressorLastStreet?: boolean;
+  /** Someone else drove the previous street and has now slowed down. */
+  villainWasAggressorLastStreet?: boolean;
   /** How many bluffs this player has already fired in this hand. */
   myBluffsThisHand?: number;
   /** The current street's bettor checked earlier this street (check-raise). */

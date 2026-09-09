@@ -4,9 +4,31 @@ import type { Street } from '../engine/types';
 /** Facts about the current hand's action line, derived from the history. */
 export interface LineContext {
   wasAggressorLastStreet: boolean;
+  /** Someone ELSE drove the previous street (and is now checking to us / not
+   * betting) — the classic spot to float / probe / take it away. */
+  villainWasAggressorLastStreet: boolean;
   facingCheckRaise: boolean;
   aggressorIsHero: boolean;
   preflopRaised: boolean;
+}
+
+/**
+ * Post-flop positional advantage in 0..1 (SB = 0 acts first, BTN = 1 acts
+ * last), computed from seats still dealt in. Note this is NOT "distance from
+ * the button": the blinds sit right next to the button yet act FIRST post-flop,
+ * while the cutoff sits far from it yet acts second-to-last.
+ */
+export function positionFactorFor(game: GameState, seatIdx: number): number {
+  const n = game.players.length;
+  const active: number[] = [];
+  for (let step = 1; step <= n; step++) {
+    const idx = (game.buttonIndex + step) % n;
+    if (!game.players[idx].sittingOut) active.push(idx);
+  }
+  // `active` is clockwise from SB ... ending with the button.
+  const order = active.indexOf(seatIdx);
+  if (order < 0 || active.length <= 1) return 0.5;
+  return order / (active.length - 1);
 }
 
 const AGGRESSIVE = new Set(['bet', 'raise', 'allin']);
@@ -29,12 +51,14 @@ export function deriveLineContext(game: GameState, seatIdx: number): LineContext
 
   const prev = PREV_STREET[game.street];
   let wasAggressorLastStreet = false;
+  let villainWasAggressorLastStreet = false;
   if (prev) {
     let lastAggressorPrev = -1;
     for (const a of game.history) {
       if (a.street === prev && AGGRESSIVE.has(a.type)) lastAggressorPrev = a.playerId;
     }
     wasAggressorLastStreet = lastAggressorPrev === seatId;
+    villainWasAggressorLastStreet = lastAggressorPrev >= 0 && lastAggressorPrev !== seatId;
   }
 
   // Current street: find the last aggressor and whether they checked earlier
@@ -58,6 +82,7 @@ export function deriveLineContext(game: GameState, seatIdx: number): LineContext
 
   return {
     wasAggressorLastStreet,
+    villainWasAggressorLastStreet,
     facingCheckRaise,
     aggressorIsHero: lastAggressorNow >= 0 && lastAggressorNow === heroId,
     preflopRaised,

@@ -4,6 +4,7 @@ import type { GameConfig, GameState, Difficulty } from './engine/gameTypes';
 import { BB_CHIPS } from './engine/gameTypes';
 import { generatePersonality } from './ai/personality';
 import { decide } from './ai/decision';
+import { deriveLineContext, positionFactorFor } from './ai/line';
 import type { Card } from './engine/types';
 import type { DecisionContext, Personality } from './ai/types';
 
@@ -22,8 +23,6 @@ function buildCtx(game: GameState, idx: number): DecisionContext {
   const p = game.players[idx];
   const legal = getLegalActions(game, idx);
   const liveOpp = game.players.filter((x) => !x.folded && !x.sittingOut && x.id !== p.id).length;
-  const n = game.players.length;
-  const dist = (idx - game.buttonIndex + n) % n;
   return {
     hole: p.hole as [Card, Card],
     board: [...game.board],
@@ -32,14 +31,15 @@ function buildCtx(game: GameState, idx: number): DecisionContext {
     toCall: game.currentBet - p.streetCommitted,
     stack: p.stack,
     bigBlind: game.bigBlind,
-    positionFactor: 1 - dist / n,
+    positionFactor: positionFactorFor(game, idx),
     street: game.street as DecisionContext['street'],
     canCheck: legal.canCheck,
     minRaiseTo: legal.minRaiseTo,
     maxRaiseTo: legal.maxRaiseTo,
     streetCommitted: p.streetCommitted,
-      totalCommitted: p.totalCommitted,
+    totalCommitted: p.totalCommitted,
     recentImage: 0.3,
+    ...deriveLineContext(game, idx),
   };
 }
 
@@ -105,7 +105,7 @@ describe('integration: full AI-driven sessions', () => {
     let button = 0;
     let allinHands = 0;
     let bigInvestHands = 0;
-    const HANDS = 40;
+    const HANDS = 120;
 
     for (let hand = 0; hand < HANDS; hand++) {
       stacks = stacks.map((s) => (s <= 0 ? 100 * BB_CHIPS : s));
