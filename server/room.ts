@@ -11,7 +11,7 @@ import { BB_CHIPS } from '../src/engine/gameTypes';
 import type { Card, PlayerAction } from '../src/engine/types';
 import { generatePersonality } from '../src/ai/personality';
 import { decide } from '../src/ai/decision';
-import { deriveLineContext } from '../src/ai/line';
+import { deriveLineContext, positionFactorFor } from '../src/ai/line';
 import type { Personality, DecisionContext } from '../src/ai/types';
 import { redactGameStateFor } from '../src/online/redact';
 import {
@@ -511,8 +511,6 @@ export class Room {
     const p = game.players[idx];
     const legal = getLegalActions(game, idx);
     const liveOpp = game.players.filter((x) => !x.folded && !x.sittingOut && x.id !== p.id).length;
-    const n = game.players.length;
-    const dist = (idx - game.buttonIndex + n) % n;
     return {
       hole: p.hole as [Card, Card],
       board: [...game.board],
@@ -521,7 +519,7 @@ export class Room {
       toCall: game.currentBet - p.streetCommitted,
       stack: p.stack,
       bigBlind: game.bigBlind,
-      positionFactor: 1 - dist / n,
+      positionFactor: positionFactorFor(game, idx),
       street: game.street as DecisionContext['street'],
       canCheck: legal.canCheck,
       minRaiseTo: legal.minRaiseTo,

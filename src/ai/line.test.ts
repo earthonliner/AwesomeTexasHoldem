@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { startHand, applyAction, type SeatInit } from '../engine/game';
 import type { GameConfig } from '../engine/gameTypes';
-import { deriveLineContext } from './line';
+import { deriveLineContext, positionFactorFor } from './line';
 
 function seeded(seed: number): () => number {
   let a = seed >>> 0;
@@ -31,7 +31,10 @@ describe('deriveLineContext', () => {
     expect(lcRaiser.preflopRaised).toBe(true);
 
     const other = (raiser + 1) % 3;
-    expect(deriveLineContext(g, other).wasAggressorLastStreet).toBe(false);
+    const otherLc = deriveLineContext(g, other);
+    expect(otherLc.wasAggressorLastStreet).toBe(false);
+    expect(otherLc.villainWasAggressorLastStreet).toBe(true);
+    expect(lcRaiser.villainWasAggressorLastStreet).toBe(false);
   });
 
   it('flags a limped pot as preflopRaised=false', () => {
@@ -69,5 +72,27 @@ describe('deriveLineContext', () => {
       // Fallback ordering (first==bettor case) — still a valid engine line.
       expect(bettor).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe('positionFactorFor', () => {
+  const cfg6: GameConfig = { seatCount: 6, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' };
+  const six: SeatInit[] = [0, 1, 2, 3, 4, 5].map((i) => ({ id: i, name: `P${i}`, isHero: i === 0, stack: 200 }));
+
+  it('orders seats by post-flop action: SB worst, BTN best, CO late (not "near the button")', () => {
+    const g = startHand(cfg6, six, 0, 1, seeded(4));
+    // button=0, SB=1, BB=2, UTG=3, MP=4, CO=5
+    expect(positionFactorFor(g, 1)).toBe(0); // SB acts first post-flop
+    expect(positionFactorFor(g, 0)).toBe(1); // BTN acts last
+    expect(positionFactorFor(g, 5)).toBeGreaterThan(positionFactorFor(g, 3)); // CO later than UTG
+    expect(positionFactorFor(g, 3)).toBeGreaterThan(positionFactorFor(g, 2)); // UTG later than BB
+    expect(positionFactorFor(g, 5)).toBeCloseTo(0.8, 5);
+  });
+
+  it('ignores seats that sit out', () => {
+    const g = startHand(cfg6, six.map((s, i) => ({ ...s, sittingOut: i === 5 })), 0, 1, seeded(5));
+    // Without the CO, MP (4) is now the last non-button seat.
+    expect(positionFactorFor(g, 4)).toBeCloseTo(0.75, 5);
+    expect(positionFactorFor(g, 0)).toBe(1);
   });
 });

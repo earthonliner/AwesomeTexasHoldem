@@ -5,7 +5,7 @@ import { BB_CHIPS } from '../engine/gameTypes';
 import { startHand as engineStartHand, applyAction, getLegalActions, totalPot, type SeatInit } from '../engine/game';
 import { generatePersonality, describePersonality } from '../ai/personality';
 import { decide } from '../ai/decision';
-import { deriveLineContext } from '../ai/line';
+import { deriveLineContext, positionFactorFor } from '../ai/line';
 import { updateHeroProfile, emptyHeroProfile } from '../ai/profile';
 import type { DecisionContext, HeroProfile } from '../ai/types';
 import { computeHeroAnalysis, computeFoldOutcome, type HeroAnalysis } from '../utils/analysis';
@@ -336,10 +336,7 @@ function buildDecisionContext(game: GameState, idx: number): DecisionContext {
   const p = game.players[idx];
   const legal = getLegalActions(game, idx);
   const liveOpponents = game.players.filter((x) => !x.folded && !x.sittingOut && x.id !== p.id).length;
-  const n = game.players.length;
-  // Position factor: distance from button (button ~ 1.0, earliest ~ 0).
-  const distFromButton = (idx - game.buttonIndex + n) % n;
-  const positionFactor = 1 - distFromButton / n;
+  const positionFactor = positionFactorFor(game, idx);
 
   return {
     hole: p.hole as [Card, Card],

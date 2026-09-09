@@ -54,6 +54,7 @@ function sizeRaise(
   rng: Rng,
   allowAllIn: boolean,
   capTarget = Infinity,
+  xBetBonus = 0,
 ): { amount: number; allIn: boolean } {
   const currentLevel = ctx.streetCommitted + ctx.toCall;
   const potAfterCall = ctx.potBefore + ctx.toCall;
@@ -63,8 +64,8 @@ function sizeRaise(
   if (ctx.toCall > 0 && currentLevel > 0) {
     // Facing a bet: raise to a standard multiple of the bet, never beyond a
     // pot-fraction raise on top of a call. Kept at the small end of real cash
-    // sizing (open ~2-2.7bb, 3-bet ~2.5x open).
-    const xBet = currentLevel * (2.0 + rng() * 0.7);
+    // sizing (open ~2-2.7bb, 3-bet ~2.5x open; squeezes add ~1x per caller).
+    const xBet = currentLevel * (2.0 + rng() * 0.7 + xBetBonus);
     const potCap = currentLevel + potAfterCall * Math.max(fraction, 0.5) * jitter;
     target = Math.round(Math.min(xBet, potCap));
   } else {
@@ -246,16 +247,32 @@ function decidePreflop(
 
   const posLean = p.positionAwareness * (positionFactor - 0.5);
 
+  const skilled = difficulty !== 'easy';
+  const facingOpen = toCall > 0 && toCall <= bigBlind * 3.5; // a normal-sized single raise
+  const inBlinds = ctx.streetCommitted > 0 && ctx.streetCommitted <= bigBlind;
+  // Callers already in the pot (squeeze spots): pot minus the raise minus blinds.
+  const callersInPot =
+    toCall >= bigBlind * 2 ? Math.max(0, Math.round((potBefore - toCall - bigBlind * 1.5) / toCall)) : 0;
+
   // Calling/playing range as a fraction of all hands.
   let playRange = p.vpip * (1 + posLean * 0.9) + exploit.stealBonus;
   if (toCall > 0 && potBefore > 0) {
     const priceRatio = toCall / potBefore; // bet size relative to pot
     playRange *= clamp(1.25 - priceRatio * 0.55, 0.45, 1.45); // cheap -> wider, pricey -> tighter
   }
+  if (skilled && facingOpen) {
+    // Cash-game defence vs a single open: position lets you realise equity, so
+    // CO/BTN flat or 3-bet far more than "fold everything but premiums"; the
+    // blinds already have money in and close the action, so they defend by price.
+    if (positionFactor >= 0.7) playRange *= 1 + 0.35 * (0.5 + p.positionAwareness * 0.5);
+    if (inBlinds) playRange *= ctx.streetCommitted >= bigBlind ? 2.0 : 1.5;
+    // Dead money from callers makes flatting/squeezing more attractive.
+    if (callersInPot > 0) playRange *= 1 + 0.12 * Math.min(2, callersInPot);
+  }
   playRange = clamp(playRange, 0.03, 0.96);
 
   const raiseRange = clamp(
-    p.vpip * p.pfr * (1 + posLean * 0.6) + exploit.stealBonus,
+    p.vpip * p.pfr * (1 + posLean * 0.6) + exploit.stealBonus + (skilled && positionFactor >= 0.7 && facingOpen ? 0.03 : 0),
     0.02,
     playRange,
   );
@@ -289,20 +306,30 @@ function decidePreflop(
     return mk('check', 0, rng, false, [...reason, 'pf-check']);
   }
 
-  // Facing a bet/raise.
+  // Facing a bet/raise. Squeezes (raise + callers) get a bigger size: one extra
+  // bet-multiple per caller, as cash players do.
+  const squeezeBonus = skilled ? callersInPot * 0.9 : 0;
   if (strength >= raiseThresh) {
-    if (mayRaise && rng() < 0.5 + p.pfr * 0.4) {
-      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn, cap);
-      return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'pf-raise'], true);
+    // With callers behind a raise, strong hands squeeze rather than flat (a
+    // multiway flat with a premium bleeds equity).
+    if (mayRaise && rng() < 0.5 + p.pfr * 0.4 + (callersInPot > 0 ? 0.25 : 0)) {
+      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn, cap, squeezeBonus);
+      return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, callersInPot > 0 ? 'pf-squeeze' : 'pf-raise'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'pf-trap-call'], true);
   }
 
   if (strength >= playThresh) {
-    // Aggressive players occasionally turn a playable hand into a light 3-bet.
-    if (mayRaise && p.aggression > 0.6 && positionFactor > 0.6 && rng() < p.bluff * 0.4) {
-      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn, cap);
-      return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'pf-light-3bet'], true);
+    // Light 3-bet / squeeze-bluff: more from position, more for aggressive
+    // personalities, and (hard) a bit more against an early-position human who
+    // has shown they fold to pressure.
+    let light3 = p.bluff * 0.4 * (positionFactor > 0.6 ? 1 : 0.35);
+    if (!skilled) light3 *= 0.5;
+    if (difficulty === 'hard' && ctx.aggressorIsHero) light3 += 0.06;
+    if (callersInPot > 0 && positionFactor > 0.6) light3 += 0.05;
+    if (mayRaise && (p.aggression > 0.45 || callersInPot > 0) && rng() < light3) {
+      const { amount, allIn } = sizeRaise(ctx, openSize, rng, allowAllIn, cap, squeezeBonus);
+      return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, callersInPot > 0 ? 'pf-squeeze-bluff' : 'pf-light-3bet'], true);
     }
     return mk('call', 0, rng, false, [...reason, 'pf-call'], true);
   }
@@ -402,9 +429,14 @@ function decidePostflop(
   const cardsToCome = street === 'flop' || street === 'turn';
 
   // Value needs to be stronger multiway; draws are hands with cards to come and
-  // moderate (not yet made) equity.
-  const valueThresh = Math.min(0.82, 0.5 + 0.075 * opp);
+  // moderate (not yet made) equity. An aggressive self-image means opponents
+  // call lighter, so value can be bet thinner (and bluffs are cut elsewhere).
+  let valueThresh = Math.min(0.82, 0.5 + 0.075 * opp);
+  if (skilled) valueThresh -= clamp(ctx.recentImage - 0.3, 0, 0.4) * 0.12;
   const draw = cardsToCome && eq >= 0.3 && eq < valueThresh;
+  // Stack-to-pot ratio: deep = implied odds for draws/set-mines, shallow = none.
+  const spr = potBefore > 0 ? ctx.stack / potBefore : 10;
+  const inPosition = positionFactor >= 0.6;
 
   // Keep bluffing balanced (believable) rather than spewy. Medium (the cash-game
   // simulation) bluffs at controlled cash-game frequencies; hard pushes harder.
@@ -429,18 +461,43 @@ function decidePostflop(
 
   const reason = [`eq=${eq.toFixed(2)}`, `vt=${valueThresh.toFixed(2)}`, `bf=${bluffFreq.toFixed(2)}`];
 
+  // River sizing is polarised for skilled players: nut hands AND bluffs use the
+  // big size (so the size never tells them apart), thin value uses a small one
+  // that a marginal hand can call.
+  const riverSize = (nutOrBluff: boolean): number => {
+    if (!skilled || street !== 'river') return betSize;
+    return nutOrBluff ? Math.max(betSize, 0.6 + rng() * 0.25) : Math.min(betSize, 0.33 + rng() * 0.15);
+  };
+
   // ---- No bet to call: bet or check ----
   if (canCheck) {
     if (eq >= valueThresh) {
       // Sometimes slow-play a monster to disguise the hand; hard traps more
-      // often against an aggressive human (check to induce bluffs).
+      // often against an aggressive human (check to induce bluffs). Out of
+      // position vs the previous street's aggressor, checking to them (letting
+      // them bluff) is also a natural line for strong hands.
       const trapBoost = exploit.trapMore ? 0.25 : 0;
-      const slowPlay = eq > 0.85 && rng() < 0.3 * (1 - p.aggression) + trapBoost;
+      const oopTrap = skilled && !inPosition && !!ctx.villainWasAggressorLastStreet ? 0.12 : 0;
+      const slowPlay = eq > 0.85 && rng() < 0.3 * (1 - p.aggression) + trapBoost + oopTrap;
       if (!slowPlay && mayRaise && rng() < 0.72 + p.aggression * 0.23) {
-        const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
+        const { amount, allIn } = sizeRaise(ctx, riverSize(eq >= 0.85), rng, short, cap);
         return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-bet']);
       }
       return mk('check', 0, rng, false, [...reason, 'slowplay-check']);
+    }
+    // Float / take-it-away: the other player drove the previous street and has
+    // now checked to us. Their range is capped by that check, so a stab wins
+    // often — especially in position. This is the core positional exploit vs
+    // a human who c-bets once and gives up.
+    const floatSpot = skilled && !!ctx.villainWasAggressorLastStreet && !ctx.wasAggressorLastStreet;
+    if (floatSpot && mayRaise && opp <= 2) {
+      let stab = 0.3 + (inPosition ? 0.25 : 0.05) + p.aggression * 0.15;
+      stab *= exploit.bluffMult;
+      if (street === 'river') stab *= 0.85;
+      if (rng() < clamp(stab, 0, 0.75)) {
+        const { amount, allIn } = sizeRaise(ctx, riverSize(true), rng, short, cap);
+        return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'float-stab']);
+      }
     }
     // Barrel plan: if we bluffed as the aggressor on the previous street, keep
     // telling the same story most of the time instead of independently
@@ -462,7 +519,7 @@ function decidePostflop(
 
     if (mayRaise && rng() < bluffFreq) {
       // Bluffs never shove off a deep stack (only when already short).
-      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
+      const { amount, allIn } = sizeRaise(ctx, riverSize(true), rng, short, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, draw ? 'semi-bluff' : 'bluff-bet']);
     }
     return mk('check', 0, rng, false, [...reason, 'check']);
@@ -471,10 +528,18 @@ function decidePostflop(
   // ---- Facing a bet: pot-odds-driven continuation ----
   const directOdds = toCall / (potBefore + toCall); // equity needed to call now
   let needed = directOdds;
-  if (draw) needed *= 0.82; // implied odds: drawing hands can win more later
+  if (draw) {
+    // Implied odds: draws win more later — more so in position (we see their
+    // action first) and with deep stacks (there is more to win); a shallow SPR
+    // leaves nothing to win when the draw comes in.
+    let implied = inPosition ? 0.78 : 0.86;
+    const depth = clamp((spr - 2) / 6, -0.3, 1); // <2 penalises, ~8 fully rewards
+    implied -= depth * 0.08 * (0.5 + p.stackReactivity * 0.5);
+    needed *= clamp(implied, 0.68, 0.95);
+  }
   let edge = eq - needed;
   edge += (p.callDown - 0.5) * 0.08; // sticky players continue more; nits less
-  edge += p.positionAwareness * (positionFactor - 0.5) * 0.05; // position helps
+  edge += p.positionAwareness * (positionFactor - 0.5) * 0.09; // position helps realise equity
   edge += exploit.valueLean;
 
   // Skilled players (medium/hard) play close to the math; easy is noisier.
@@ -493,7 +558,7 @@ function decidePostflop(
     }
     // Continue: choose raise vs call with mixed frequencies (within budget).
     if (mayRaise && eq >= valueThresh + 0.06 && rng() < 0.45 + p.aggression * 0.4) {
-      const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
+      const { amount, allIn } = sizeRaise(ctx, riverSize(eq >= 0.85), rng, short, cap);
       return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-raise'], true);
     }
     if (mayRaise && draw && rng() < bluffFreq * 0.6) {
@@ -509,7 +574,7 @@ function decidePostflop(
 
   // Fold zone: occasionally turn it into a bluff-raise when cheap (never a deep shove).
   if (mayRaise && rng() < bluffFreq * 0.3 && toCall <= potBefore * 0.5) {
-    const { amount, allIn } = sizeRaise(ctx, betSize, rng, short, cap);
+    const { amount, allIn } = sizeRaise(ctx, riverSize(true), rng, short, cap);
     return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'bluff-raise'], true);
   }
 

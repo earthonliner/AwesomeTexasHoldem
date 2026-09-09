@@ -23,8 +23,9 @@ export function dynamicBluffFrequency(p: Personality, ctx: DecisionContext): num
   const potToStack = ctx.stack > 0 ? ctx.potBefore / ctx.stack : 1;
   freq += (0.5 - Math.min(1, potToStack)) * 0.15 * p.potReactivity;
 
-  // Self image: if recent play looks very aggressive, bluffs get called more.
-  freq -= ctx.recentImage * 0.2;
+  // Self image, both ways: an aggressive image gets called more (bluff less),
+  // while a tight/quiet image buys credibility (bluff more, it gets through).
+  freq -= (ctx.recentImage - 0.3) * 0.35;
 
   // Earlier streets give more room to barrel; river bluffs are committal.
   if (ctx.street === 'river') freq *= 0.85;
