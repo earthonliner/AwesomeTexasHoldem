@@ -221,7 +221,7 @@ npm run ipad             # = build + cap sync ios + cap open ios
 - 除 SB 外采用 **raise-or-fold**；BB 无人加注时直接 check。
 - 非单挑 SB（单挑庄家按 BTN 处理）在进入开池范围后，对非 `AA/KK/QQ/AKs/AKo` 保留线下常见的 limp 混合：
   `P(limp) = 0.28 × (1 - aggression × 0.35)`，困难人格下通常约 **20%–23%**。
-- RFI 的目标由通用尺度器计算：基准倍数 `2.55 + U(0,0.4)`，通常约 **2.55–2.95BB**，同时受合法最小加注与底池上限约束；深筹码不会 open-jam。
+- RFI 的目标由通用尺度器计算：基准倍数 `2.55 + U(0,0.4)`，取整到 0.5BB 筹码单位后通常为 **2.5BB 或 3BB**，同时受合法最小加注与底池上限约束；深筹码不会 open-jam。
 
 **原因**：前位需要抵御全桌，后位可利用位置和盲注弃牌率；SB 翻后永远 OOP，因此保留少量完成/加注混合，而不是把所有可玩牌机械加注。
 
@@ -580,7 +580,7 @@ potCap      = currentLevel + potAfterCall × max(fraction,0.5) × U(0.9,1.1)
 
 | 场景 | 必要条件与当前参数 |
 | --- | --- |
-| 强价值主动下注 | 达到 valueThreshold；若不 trap 则下注 |
+| 强价值主动下注 | `equity≥valueThreshold`；flop/turn 还须至少一对，river 可仅凭 equity；若不 trap 则下注 |
 | Trap | 真人激进画像可 `+0.20`；`boardWetness<0.48`、两对+、OOP 且上一街对手主导再 `+0.12` |
 | 面对下注 trap-call | `trapMore` 已启用、`equity≥valueThreshold+0.08`、尚未 commit 时，以 **42%** 混合只跟不加 |
 | Float / probe | 上一街对手是攻击者、**本街已真实 check 到 AI**、AI 上街不是攻击者、对手数≤2、`actionEV>0` |
