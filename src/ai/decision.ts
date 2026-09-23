@@ -433,7 +433,8 @@ function decidePreflop(
   const effectiveDepthBB = (effective + ctx.totalCommitted) / bigBlind;
   reason.push(`eff=${effectiveDepthBB.toFixed(0)}bb`);
   const committedCall =
-    toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo;
+    !mayRaise &&
+    (toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo);
   if (committedCall) {
     let jamRange =
       wagerBB >= 55 ? 0.045 : wagerBB >= 30 ? 0.07 : wagerBB >= 18 ? 0.11 : 0.17;

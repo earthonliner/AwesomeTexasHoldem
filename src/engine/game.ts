@@ -159,7 +159,14 @@ export function getLegalActions(state: GameState, playerIndex: number): LegalAct
   // Min raise target follows the last full raise increment, capped at all-in.
   const minRaiseTo = Math.min(state.currentBet + state.minRaise, maxRaiseTo);
 
-  const canAggress = p.stack > toCall; // has chips beyond a call to put in
+  const opponentCanRespond = state.players.some(
+    (other) =>
+      other.id !== p.id &&
+      !other.folded &&
+      !other.sittingOut &&
+      !other.allIn,
+  );
+  const canAggress = p.stack > toCall && opponentCanRespond;
   // A short all-in raise makes prior callers/raisers owe the difference, but it
   // only reopens their raise rights once one or more short all-ins cumulatively
   // add up to a full raise. A prior checker retains the option to raise a first

@@ -49,6 +49,11 @@ export function buildDecisionContext(
     .map((p, i) => ({ p, i }))
     .filter(({ p }) => !p.folded && !p.sittingOut && p.id !== player.id);
   const line = deriveLineContext(game, idx, meta.profiledPlayerIds);
+  const actedThisStreet = new Set(
+    game.history
+      .filter((action) => action.street === game.street)
+      .map((action) => action.playerId),
+  );
   const relevantAggressorId =
     line.currentAggressorId >= 0 ? line.currentAggressorId : line.previousAggressorId;
   const relevantOpponent =
@@ -79,7 +84,9 @@ export function buildDecisionContext(
     positionFactor,
     position: tablePositionFor(game, idx),
     tableSize: game.players.filter((p) => !p.sittingOut).length,
-    playersBehind: liveOpponentIndices.filter(({ p }) => !p.hasActed && !p.allIn).length,
+    playersBehind: liveOpponentIndices.filter(
+      ({ p }) => !actedThisStreet.has(p.id) && !p.allIn,
+    ).length,
     street: game.street as DecisionContext['street'],
     canCheck: legal.canCheck,
     canRaise: legal.canBet || legal.canRaise,

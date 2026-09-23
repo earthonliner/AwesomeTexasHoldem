@@ -32,6 +32,35 @@ describe('buildDecisionContext', () => {
     expect(ctx.profiledPlayerId).toBe(3);
     expect(ctx.betToPot).toBeGreaterThan(0);
   });
+
+  it('does not relabel an earlier bettor as unacted after a full raise', () => {
+    let game = startHand(
+      { ...config, seatCount: 3 },
+      seats.slice(0, 3),
+      0,
+      2,
+      () => 0.37,
+    );
+    while (game.street === 'preflop') {
+      const player = game.players[game.toAct];
+      const toCall = game.currentBet - player.streetCommitted;
+      game = applyAction(
+        game,
+        toCall > 0
+          ? { type: 'call', amount: 0 }
+          : { type: 'check', amount: 0 },
+      );
+    }
+
+    game = applyAction(game, { type: 'bet', amount: 4 });
+    game = applyAction(game, { type: 'raise', amount: 12 });
+    expect(game.players[1].hasActed).toBe(false); // reset by the full raise
+    expect(game.toAct).toBe(0);
+
+    const ctx = buildDecisionContext(game, game.toAct);
+    expect(ctx.playersBehind).toBe(0);
+    expect(ctx.streetAggressionCount).toBe(2);
+  });
 });
 
 describe('resolveProfiledOpponentId', () => {

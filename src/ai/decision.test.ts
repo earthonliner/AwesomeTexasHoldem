@@ -267,6 +267,54 @@ describe('hard preflop expert strategy', () => {
       }
     }
   });
+
+  it('isolates a short all-in with aces while active players remain', () => {
+    const d = decide({
+      personality: expert,
+      difficulty: 'hard',
+      ctx: ctx({
+        hole: parseCards('As Ad') as [Card, Card],
+        liveOpponents: 3,
+        potBefore: 17,
+        toCall: 10,
+        currentBet: 10,
+        effectiveStack: 10,
+        canRaise: true,
+        minRaiseTo: 18,
+        maxRaiseTo: 200,
+        preflopPotType: 'singleRaised',
+        preflopRaiseCount: 1,
+      }),
+      rng: seeded(11_500),
+    });
+    expect(d.action).toBe('raise');
+    expect(d.reason).toContain('pf-value-3bet');
+  });
+
+  it('shoves aces instead of flatting a committing 3-bet at 15bb', () => {
+    const d = decide({
+      personality: expert,
+      difficulty: 'hard',
+      ctx: ctx({
+        hole: parseCards('As Ad') as [Card, Card],
+        potBefore: 29,
+        toCall: 14,
+        currentBet: 20,
+        streetCommitted: 6,
+        totalCommitted: 6,
+        stack: 24,
+        effectiveStack: 24,
+        canRaise: true,
+        minRaiseTo: 30,
+        maxRaiseTo: 30,
+        preflopPotType: 'threeBet',
+        preflopRaiseCount: 2,
+      }),
+      rng: seeded(11_501),
+    });
+    expect(d.action).toBe('allin');
+    expect(d.reason).toContain('pf-shallow-4bet-value');
+  });
 });
 
 describe('AI sizing realism (all-in discipline)', () => {

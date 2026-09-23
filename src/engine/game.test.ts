@@ -106,6 +106,21 @@ describe('legal actions', () => {
     expect(legal.callAmount).toBe(4);
     expect(legal.canRaise).toBe(true);
   });
+
+  it('does not allow a heads-up raise when every opponent is already all-in', () => {
+    const seats: SeatInit[] = [
+      { id: 0, name: 'Button', isHero: true, stack: 200 },
+      { id: 1, name: 'Short BB', isHero: false, stack: 10 },
+    ];
+    let s = startHand({ ...config, seatCount: 2 }, seats, 0, 1, seeded(53));
+    s = applyAction(s, { type: 'call', amount: 0 });
+    s = applyAction(s, { type: 'allin', amount: 10 });
+
+    expect(s.toAct).toBe(0);
+    const legal = getLegalActions(s, 0);
+    expect(legal.canCall).toBe(true);
+    expect(legal.canRaise).toBe(false);
+  });
 });
 
 describe('full hand flow', () => {
