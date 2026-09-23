@@ -937,6 +937,37 @@ describe('multiway post-flop initiative (hard)', () => {
     expect(withInitiative).toBeLessThan(0.6);
   });
 
+  it('keeps pair-plus-draw range c-bets connected to the semi-bluff barrel plan', () => {
+    const hole = parseCards('7h 3h') as [Card, Card];
+    const board = parseCards('9h 7c 2h');
+    let rangeCbets = 0;
+    for (let s = 0; s < 100; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 24,
+          liveOpponents: 2,
+          positionFactor: 0.7,
+          preflopPotType: 'singleRaised',
+          wasAggressorLastStreet: true,
+        }),
+        rng: seeded(7250 + s),
+        iterations: 120,
+      });
+      if (d.reason.endsWith('range-cbet')) {
+        rangeCbets++;
+        expect(d.isBluff).toBe(true);
+      }
+    }
+    expect(rangeCbets).toBeGreaterThan(5);
+  });
+
   it('probes more often after a full street checks through', () => {
     const board = parseCards('Kh 8c 3d 6s');
     const rate = (checkedThrough: boolean): number => {

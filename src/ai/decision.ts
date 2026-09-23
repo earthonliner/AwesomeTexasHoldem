@@ -1002,7 +1002,9 @@ function decidePostflop(
       ) {
         const { amount, allIn } = sized;
         const isRangeBluff =
-          features.category === HandCategory.HighCard || features.pairKind === 'under';
+          features.category === HandCategory.HighCard ||
+          features.pairKind === 'under' ||
+          hasDraw;
         return mk(
           allIn ? 'allin' : 'raise',
           amount,
@@ -1101,7 +1103,9 @@ function decidePostflop(
       ) {
         const { amount, allIn } = sized;
         const isProbeBluff =
-          features.category === HandCategory.HighCard || features.pairKind === 'under';
+          features.category === HandCategory.HighCard ||
+          features.pairKind === 'under' ||
+          hasDraw;
         return mk(
           allIn ? 'allin' : 'raise',
           amount,

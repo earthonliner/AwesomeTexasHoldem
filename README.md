@@ -619,7 +619,7 @@ cbetQuality
 P(c-bet) = clamp(cbetBase × cbetQuality × foldPressure, 0.04, 0.58)
 ```
 
-Turn/River 若上一街至少两人行动且全部 check，则标记为 `previousStreetCheckedThrough`。Turn 可用听牌、高牌、底/中对和公共牌对子 probe；river 仅用高牌候选。当前混合为：
+Turn/River 若上一街至少两人行动且全部 check，则标记为 `previousStreetCheckedThrough`。Turn 可用听牌、高牌、底/中对、公共牌对子或其他 `bluffQuality≥0.10` 的组合 probe；river 仅用高牌候选。当前混合为：
 
 ```text
 probeBase
@@ -633,7 +633,7 @@ probeQuality
 P(probe) = clamp(probeBase × probeQuality × foldPressure, 0.06, 0.62)
 ```
 
-全桌过牌会使范围封顶，因此 probe 的弃牌率估计再增加 `0.08 + positionFactor×0.04`，最终仍截断到 `[0.08,0.78]`。Range c-bet、保护下注和 checked-through probe 都使用非极化尺度桶，并继续服从动作 EV；这提高真实主动进攻率，但不会让多人池变成无条件轮流诈唬。
+全桌过牌会使范围封顶，因此 probe 的弃牌率估计再增加 `0.08 + positionFactor×0.04`，最终仍截断到 `[0.08,0.78]`。Range c-bet、保护下注和 checked-through probe 都使用非极化尺度桶，并继续服从动作 EV；对子加听牌等半诈唬会保留 bluff 标记以接通后续 barrel。这样提高真实主动进攻率，但不会让多人池变成无条件轮流诈唬。
 
 若上一街 bluff barrel 变成负 EV，AI 会明确进入 give-up check，而不是为了“讲故事”继续烧钱。
 
