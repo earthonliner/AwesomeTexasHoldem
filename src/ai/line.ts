@@ -15,6 +15,7 @@ export interface LineContext {
   currentAggressorId: number;
   villainCheckedToMe: boolean;
   checkedThisStreet: boolean;
+  previousStreetCheckedThrough: boolean;
   streetAggressionCount: number;
   betToPot: number;
   preflopPotType: PreflopPotType;
@@ -117,9 +118,14 @@ export function deriveLineContext(
   let wasAggressorLastStreet = false;
   let villainWasAggressorLastStreet = false;
   let previousAggressorId = -1;
+  let previousStreetCheckedThrough = false;
   if (prev) {
-    for (const a of game.history) {
-      if (a.street === prev && AGGRESSIVE.has(a.type)) previousAggressorId = a.playerId;
+    const previousActions = game.history.filter((action) => action.street === prev);
+    previousStreetCheckedThrough =
+      previousActions.length >= 2 &&
+      previousActions.every((action) => action.type === 'check');
+    for (const action of previousActions) {
+      if (AGGRESSIVE.has(action.type)) previousAggressorId = action.playerId;
     }
     wasAggressorLastStreet = previousAggressorId === seatId;
     villainWasAggressorLastStreet = previousAggressorId >= 0 && previousAggressorId !== seatId;
@@ -198,6 +204,7 @@ export function deriveLineContext(
       previousAggressorId !== seatId &&
       checkedThisStreet.has(previousAggressorId),
     checkedThisStreet: checkedThisStreet.has(seatId),
+    previousStreetCheckedThrough,
     streetAggressionCount,
     betToPot,
     preflopPotType,

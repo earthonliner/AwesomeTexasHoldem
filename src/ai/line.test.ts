@@ -48,6 +48,22 @@ describe('deriveLineContext', () => {
     expect(deriveLineContext(g, 0).preflopRaised).toBe(false);
   });
 
+  it('detects when the previous post-flop street checked through', () => {
+    let g = startHand(config, seats, 0, 1, seeded(21));
+    while (g.street === 'preflop' && g.toAct >= 0) {
+      const idx = g.toAct;
+      const toCall = g.currentBet - g.players[idx].streetCommitted;
+      g = applyAction(g, toCall > 0 ? { type: 'call', amount: 0 } : { type: 'check', amount: 0 });
+    }
+    expect(g.street).toBe('flop');
+    while (g.street === 'flop' && g.toAct >= 0) {
+      g = applyAction(g, { type: 'check', amount: 0 });
+    }
+
+    expect(g.street).toBe('turn');
+    expect(deriveLineContext(g, g.toAct).previousStreetCheckedThrough).toBe(true);
+  });
+
   it('counts the first short all-in as an open but not later under-raises', () => {
     const shortSeats: SeatInit[] = [
       { id: 0, name: 'Short BTN', isHero: true, stack: 3 },
