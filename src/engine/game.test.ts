@@ -90,16 +90,18 @@ describe('legal actions', () => {
 
   it('cumulative short all-ins reopen action after a full raise increment', () => {
     const seats: SeatInit[] = [
-      { id: 0, name: 'Short button', isHero: false, stack: 8 },
-      { id: 1, name: 'Short SB', isHero: false, stack: 10 },
-      { id: 2, name: 'BB', isHero: false, stack: 200 },
+      { id: 0, name: 'Short button', isHero: false, stack: 10 },
+      { id: 1, name: 'SB', isHero: false, stack: 200 },
+      { id: 2, name: 'BB responder', isHero: false, stack: 200 },
       { id: 3, name: 'Opener', isHero: true, stack: 200 },
+      { id: 4, name: 'Short caller', isHero: false, stack: 8 },
     ];
-    let s = startHand(config, seats, 0, 1, seeded(52));
+    let s = startHand({ ...config, seatCount: 5 }, seats, 0, 1, seeded(52));
     s = applyAction(s, { type: 'raise', amount: 6 }); // full +4
     s = applyAction(s, { type: 'allin', amount: 8 }); // short +2
     s = applyAction(s, { type: 'allin', amount: 10 }); // cumulative +4
     s = applyAction(s, { type: 'fold', amount: 0 });
+    s = applyAction(s, { type: 'call', amount: 0 });
 
     expect(s.toAct).toBe(3);
     const legal = getLegalActions(s, 3);
