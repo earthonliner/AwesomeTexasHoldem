@@ -159,13 +159,17 @@ export function getLegalActions(state: GameState, playerIndex: number): LegalAct
   const minRaiseTo = Math.min(state.currentBet + state.minRaise, maxRaiseTo);
 
   const canAggress = p.stack > toCall; // has chips beyond a call to put in
+  // A short all-in raise makes prior callers/raisers owe the difference, but it
+  // does not reopen their raise rights. A player who previously checked still
+  // retains the option to raise a first (even undersized all-in) wager.
+  const raiseRightsOpen = !p.hasActed || p.lastAction === 'check';
   return {
     canFold: true,
     canCheck,
     canCall: !canCheck && p.stack > 0,
     callAmount,
     canBet: canCheck && canAggress,
-    canRaise: !canCheck && canAggress,
+    canRaise: !canCheck && canAggress && raiseRightsOpen,
     minRaiseTo,
     maxRaiseTo,
   };
@@ -186,16 +190,34 @@ export function applyAction(state: GameState, action: PlayerAction): GameState {
   const potBefore = totalPot(next);
   const toCall = next.currentBet - p.streetCommitted;
 
+  // Normalize an all-in that does not exceed the wager into a call. Reject
+  // other illegal actions instead of silently turning them into forced raises.
+  let actionType = action.type;
+  if (actionType === 'allin' && p.stack <= toCall) actionType = 'call';
+  if (actionType === 'check' && !legal.canCheck) return state;
+  if (actionType === 'call' && !legal.canCall) {
+    if (legal.canCheck) actionType = 'check';
+    else return state;
+  }
+  if (actionType === 'bet' && !legal.canBet) return state;
+  if (actionType === 'raise' && !legal.canRaise) return state;
+  if (actionType === 'allin') {
+    const canAllInAggress = legal.canCheck ? legal.canBet : legal.canRaise;
+    if (!canAllInAggress) return state;
+  }
+
   const record: ActionRecord = {
     playerId: p.id,
     street: next.street,
-    type: action.type,
+    type: actionType,
     amount: 0,
     potBefore,
     toCall,
+    chipsPutIn: 0,
+    raiseBy: 0,
   };
 
-  switch (action.type) {
+  switch (actionType) {
     case 'fold': {
       p.folded = true;
       p.lastAction = 'fold';
@@ -210,13 +232,14 @@ export function applyAction(state: GameState, action: PlayerAction): GameState {
       commit(p, pay);
       p.lastAction = 'call';
       record.amount = pay;
+      record.chipsPutIn = pay;
       break;
     }
     case 'bet':
     case 'raise':
     case 'allin': {
       let target: number;
-      if (action.type === 'allin') {
+      if (actionType === 'allin') {
         target = legal.maxRaiseTo;
       } else {
         target = Math.min(Math.max(action.amount, legal.minRaiseTo), legal.maxRaiseTo);
@@ -224,6 +247,8 @@ export function applyAction(state: GameState, action: PlayerAction): GameState {
       const delta = target - p.streetCommitted;
       const increment = target - next.currentBet;
       commit(p, delta);
+      record.chipsPutIn = delta;
+      record.raiseBy = Math.max(0, increment);
 
       // A raise reopens betting only if it is at least a full minimum raise.
       const isFullRaise = increment >= next.minRaise - 1e-9;
@@ -242,7 +267,7 @@ export function applyAction(state: GameState, action: PlayerAction): GameState {
   }
 
   p.hasActed = true;
-  record.type = p.lastAction ?? action.type;
+  record.type = p.lastAction ?? actionType;
   next.history.push(record);
 
   advance(next);

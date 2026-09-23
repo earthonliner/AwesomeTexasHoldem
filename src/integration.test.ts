@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { startHand, applyAction, getLegalActions, totalPot, type SeatInit } from './engine/game';
+import { startHand, applyAction, totalPot, type SeatInit } from './engine/game';
 import type { GameConfig, GameState, Difficulty } from './engine/gameTypes';
 import { BB_CHIPS } from './engine/gameTypes';
 import { generatePersonality } from './ai/personality';
 import { decide } from './ai/decision';
-import { deriveLineContext, positionFactorFor } from './ai/line';
-import type { Card } from './engine/types';
-import type { DecisionContext, Personality } from './ai/types';
+import { buildDecisionContext } from './ai/context';
+import type { Personality } from './ai/types';
 
 function seeded(seed: number): () => number {
   let a = seed >>> 0;
@@ -19,29 +18,8 @@ function seeded(seed: number): () => number {
   };
 }
 
-function buildCtx(game: GameState, idx: number): DecisionContext {
-  const p = game.players[idx];
-  const legal = getLegalActions(game, idx);
-  const liveOpp = game.players.filter((x) => !x.folded && !x.sittingOut && x.id !== p.id).length;
-  return {
-    hole: p.hole as [Card, Card],
-    board: [...game.board],
-    liveOpponents: Math.max(1, liveOpp),
-    potBefore: totalPot(game),
-    toCall: game.currentBet - p.streetCommitted,
-    stack: p.stack,
-    bigBlind: game.bigBlind,
-    positionFactor: positionFactorFor(game, idx),
-    street: game.street as DecisionContext['street'],
-    canCheck: legal.canCheck,
-    minRaiseTo: legal.minRaiseTo,
-    maxRaiseTo: legal.maxRaiseTo,
-    streetCommitted: p.streetCommitted,
-    totalCommitted: p.totalCommitted,
-    recentImage: 0.3,
-    ...deriveLineContext(game, idx),
-  };
-}
+const buildCtx = (game: GameState, idx: number) =>
+  buildDecisionContext(game, idx, { recentImage: 0.3 });
 
 function playHand(
   config: GameConfig,

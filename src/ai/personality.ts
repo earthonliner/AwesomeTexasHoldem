@@ -89,16 +89,18 @@ export function generatePersonality(difficulty: Difficulty, rng: Rng = defaultRn
     };
   }
 
-  // hard: solid balanced-aggressive baseline.
+  // Hard: winning live-reg styles. Skill comes from range/EV/profile logic in
+  // the decision layer, not from simply assigning a higher random bluff rate.
+  const lag = rng() < 0.38;
   return {
-    vpip: around(rng, 0.27, 0.06),
-    pfr: around(rng, 0.7, 0.1),
-    aggression: around(rng, 0.65, 0.12),
-    bluff: around(rng, 0.3, 0.08),
-    callDown: around(rng, 0.55, 0.12),
-    positionAwareness: around(rng, 0.85, 0.1),
-    stackReactivity: around(rng, 0.75, 0.12),
-    potReactivity: around(rng, 0.75, 0.12),
+    vpip: around(rng, lag ? 0.33 : 0.24, 0.035),
+    pfr: around(rng, lag ? 0.82 : 0.78, 0.055),
+    aggression: around(rng, lag ? 0.72 : 0.63, 0.07),
+    bluff: around(rng, lag ? 0.22 : 0.17, 0.035),
+    callDown: around(rng, lag ? 0.56 : 0.5, 0.07),
+    positionAwareness: around(rng, 0.92, 0.05),
+    stackReactivity: around(rng, 0.86, 0.07),
+    potReactivity: around(rng, 0.84, 0.07),
   };
 }
 

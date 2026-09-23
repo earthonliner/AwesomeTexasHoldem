@@ -47,6 +47,10 @@ export interface ActionRecord {
   /** Pot size before this action, for replay/analysis. */
   potBefore: number;
   toCall: number;
+  /** Chips moved from this player's stack by the action. */
+  chipsPutIn?: number;
+  /** Increment above the previous wager level (0 for checks/calls). */
+  raiseBy?: number;
 }
 
 export type HandStatus = 'betting' | 'showdown' | 'complete';

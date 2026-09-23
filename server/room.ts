@@ -3,16 +3,16 @@ import {
   startHand,
   applyAction,
   getLegalActions,
-  totalPot,
   type SeatInit,
 } from '../src/engine/game';
 import type { GameState, GameConfig } from '../src/engine/gameTypes';
 import { BB_CHIPS } from '../src/engine/gameTypes';
-import type { Card, PlayerAction } from '../src/engine/types';
+import type { PlayerAction, Street } from '../src/engine/types';
 import { generatePersonality } from '../src/ai/personality';
 import { decide } from '../src/ai/decision';
-import { deriveLineContext, positionFactorFor } from '../src/ai/line';
-import type { Personality, DecisionContext } from '../src/ai/types';
+import { buildDecisionContext } from '../src/ai/context';
+import { emptyHeroProfile, summarizePlayerHand, updateHeroProfile } from '../src/ai/profile';
+import type { HeroProfile, Personality } from '../src/ai/types';
 import { redactGameStateFor } from '../src/online/redact';
 import {
   type ClientMsg,
@@ -71,7 +71,9 @@ export class Room {
   private readyIds = new Set<string>();
   /** Per-hand bluff counts and rolling aggression image per AI seat. */
   private aiBluffCounts: Record<number, number> = {};
+  private aiLastBluffStreet: Record<number, Street> = {};
   private aiImages: Record<number, number> = {};
+  private humanProfiles: Record<number, HeroProfile> = {};
 
   private actionTimer: ReturnType<typeof setTimeout> | null = null;
   private nextHandTimer: ReturnType<typeof setTimeout> | null = null;
@@ -109,6 +111,7 @@ export class Room {
   }
 
   private vacate(seat: ServerSeat): void {
+    delete this.humanProfiles[seat.seatId];
     seat.kind = 'empty';
     seat.name = '';
     seat.token = undefined;
@@ -195,6 +198,7 @@ export class Room {
     seat.stack = this.config.startingStackBB * BB_CHIPS;
     seat.net = 0;
     seat.sittingOut = this.phase === 'playing'; // join from the next hand
+    this.humanProfiles[seatId] = this.humanProfiles[seatId] ?? emptyHeroProfile();
   }
 
   private onStand(clientId: string): void {
@@ -209,6 +213,13 @@ export class Room {
     }
     if (patch.startingStackBB) {
       for (const s of this.seats) if (s.kind !== 'human') s.stack = patch.startingStackBB * BB_CHIPS;
+    }
+    if (patch.difficulty) {
+      for (const seat of this.seats) {
+        if (seat.kind === 'ai') {
+          seat.personality = generatePersonality(patch.difficulty, Math.random);
+        }
+      }
     }
   }
 
@@ -331,6 +342,7 @@ export class Room {
     this.handOver = false;
     this.lastResultText = '';
     this.aiBluffCounts = {};
+    this.aiLastBluffStreet = {};
     this.advanceTurn();
   }
 
@@ -376,17 +388,33 @@ export class Room {
     const game = this.game!;
     const seat = this.seats[idx];
     if (!seat.personality) return;
-    const ctx = this.buildContext(game, idx);
+    const humanIds = new Set(
+      this.seats.filter((candidate) => candidate.kind === 'human').map((candidate) => candidate.seatId),
+    );
+    const ctx = buildDecisionContext(game, idx, {
+      recentImage: this.aiImages[seat.seatId] ?? 0.3,
+      bluffCount: this.aiBluffCounts[seat.seatId] ?? 0,
+      lastBluffStreet: this.aiLastBluffStreet[seat.seatId],
+      profiledPlayerIds: humanIds,
+    });
+    const fallbackHuman = game.players.find(
+      (player) => humanIds.has(player.id) && !player.folded && !player.sittingOut,
+    )?.id;
+    const profileId = ctx.profiledPlayerId ?? fallbackHuman;
     const decision = decide({
       personality: seat.personality,
       difficulty: this.config.difficulty,
       ctx,
       rng: Math.random,
+      heroProfile: profileId === undefined ? undefined : this.humanProfiles[profileId],
     });
     const delay = Math.min(1600, Math.max(450, decision.thinkMs));
     this.actionTimer = setTimeout(() => {
       if (!this.game || this.game.toAct !== idx) return;
-      if (decision.isBluff) this.aiBluffCounts[seat.seatId] = (this.aiBluffCounts[seat.seatId] ?? 0) + 1;
+      if (decision.isBluff) {
+        this.aiBluffCounts[seat.seatId] = (this.aiBluffCounts[seat.seatId] ?? 0) + 1;
+        this.aiLastBluffStreet[seat.seatId] = this.game.street;
+      }
       this.apply({ type: decision.action, amount: decision.amount });
     }, delay);
   }
@@ -427,6 +455,17 @@ export class Room {
     this.turnDeadline = null;
     this.lastResultText = this.buildResultText(game);
     this.readyIds.clear();
+
+    for (const seat of this.seats) {
+      if (seat.kind !== 'human') continue;
+      const player = game.players.find((candidate) => candidate.id === seat.seatId);
+      if (!player || player.sittingOut) continue;
+      const current = this.humanProfiles[seat.seatId] ?? emptyHeroProfile();
+      this.humanProfiles[seat.seatId] = updateHeroProfile(
+        current,
+        summarizePlayerHand(game, seat.seatId),
+      );
+    }
 
     // Update each AI's rolling aggression image for the dynamic-bluff model.
     for (const p of game.players) {
@@ -505,31 +544,6 @@ export class Room {
     } else {
       seat.pendingTopUp = true;
     }
-  }
-
-  private buildContext(game: GameState, idx: number): DecisionContext {
-    const p = game.players[idx];
-    const legal = getLegalActions(game, idx);
-    const liveOpp = game.players.filter((x) => !x.folded && !x.sittingOut && x.id !== p.id).length;
-    return {
-      hole: p.hole as [Card, Card],
-      board: [...game.board],
-      liveOpponents: Math.max(1, liveOpp),
-      potBefore: totalPot(game),
-      toCall: game.currentBet - p.streetCommitted,
-      stack: p.stack,
-      bigBlind: game.bigBlind,
-      positionFactor: positionFactorFor(game, idx),
-      street: game.street as DecisionContext['street'],
-      canCheck: legal.canCheck,
-      minRaiseTo: legal.minRaiseTo,
-      maxRaiseTo: legal.maxRaiseTo,
-      streetCommitted: p.streetCommitted,
-      totalCommitted: p.totalCommitted,
-      recentImage: this.aiImages[p.id] ?? 0.3,
-      ...deriveLineContext(game, idx),
-      myBluffsThisHand: this.aiBluffCounts[p.id] ?? 0,
-    };
   }
 
   private buildResultText(game: GameState): string {
