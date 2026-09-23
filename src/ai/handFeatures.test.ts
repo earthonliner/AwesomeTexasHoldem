@@ -24,4 +24,14 @@ describe('analyseHand', () => {
     expect(blocker.blockerScore).toBeGreaterThan(air.blockerScore);
     expect(blocker.bluffQuality).toBeGreaterThan(air.bluffQuality);
   });
+
+  it('does not count a straight completed only by the board as a player draw', () => {
+    const features = analyseHand(
+      hole('Ah 2d'),
+      parseCards('9s 8c 7d 6h'),
+    );
+    expect(features.straightDraw).toBe(false);
+    expect(features.openEnded).toBe(false);
+    expect(features.drawOutsApprox).toBe(3); // only the approximate ace overcard outs remain
+  });
 });

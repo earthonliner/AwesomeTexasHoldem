@@ -71,7 +71,14 @@ export function tablePositionFor(game: GameState, seatIdx: number): TablePositio
   const preflopOrder: number[] = [];
   for (let step = 1; step <= game.players.length; step++) {
     const idx = (bb + step) % game.players.length;
-    if (game.players[idx].sittingOut || idx === button) continue;
+    if (
+      game.players[idx].sittingOut ||
+      idx === button ||
+      idx === sb ||
+      idx === bb
+    ) {
+      continue;
+    }
     preflopOrder.push(idx);
   }
   const order = preflopOrder.indexOf(seatIdx);

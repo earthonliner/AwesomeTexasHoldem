@@ -35,6 +35,8 @@ export interface PlayerState {
   totalCommitted: number;
   /** Acted since the last aggressive action that reopened betting this street. */
   hasActed: boolean;
+  /** Wager level after this player's most recent action on the street. */
+  actedAtBet: number;
   lastAction: ActionType | null;
   sittingOut: boolean;
 }

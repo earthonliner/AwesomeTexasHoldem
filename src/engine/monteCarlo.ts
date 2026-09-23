@@ -56,7 +56,15 @@ export function estimateEquity(opts: EquityOptions): EquityResult {
 
   const known = [...heroCards, ...board];
   const baseDeck = removeKnown(makeDeck(), known);
-  const needBoard = 5 - board.length;
+  const needBoard = Math.max(0, 5 - board.length);
+  const maxOpponents = Math.floor((baseDeck.length - needBoard) / 2);
+  if (maxOpponents < 1) {
+    throw new RangeError('Not enough unknown cards to deal an opponent hand');
+  }
+  const opponentCount = Math.min(
+    maxOpponents,
+    Math.max(1, Math.floor(opponents)),
+  );
 
   let wins = 0;
   let ties = 0;
@@ -65,27 +73,39 @@ export function estimateEquity(opts: EquityOptions): EquityResult {
 
   for (let iter = 0; iter < iterations; iter++) {
     const deck = shuffle(baseDeck.slice(), rng);
-    let cursor = 0;
 
     const oppHands: [Card, Card][] = [];
-    for (let o = 0; o < opponents; o++) {
-      let c1 = deck[cursor++];
-      let c2 = deck[cursor++];
+    for (let o = 0; o < opponentCount; o++) {
+      let firstIndex = deck.length - 1;
+      let secondIndex = deck.length - 2;
 
       if (mode === 'range') {
-        // Rejection sampling: bias toward stronger hands but cap attempts so we
-        // never loop forever when the deck is depleted.
-        let attempts = 0;
-        while (attempts < 4 && preflopPercentile(c1, c2) < 0.45 + rng() * 0.35) {
-          c1 = deck[cursor++ % deck.length];
-          c2 = deck[cursor++ % deck.length];
-          attempts++;
+        // Try several candidate pairs without consuming rejected cards. The
+        // old cursor-based rejection sampler could reuse cards and exhaust the
+        // future board in large multiway pots.
+        for (let attempt = 0; attempt < 5; attempt++) {
+          firstIndex = Math.floor(rng() * deck.length);
+          secondIndex = Math.floor(rng() * (deck.length - 1));
+          if (secondIndex >= firstIndex) secondIndex++;
+          const candidateA = deck[firstIndex];
+          const candidateB = deck[secondIndex];
+          if (
+            preflopPercentile(candidateA, candidateB) >= 0.45 + rng() * 0.35 ||
+            attempt === 4
+          ) {
+            break;
+          }
         }
       }
+
+      const c1 = deck[firstIndex];
+      const c2 = deck[secondIndex];
+      deck.splice(Math.max(firstIndex, secondIndex), 1);
+      deck.splice(Math.min(firstIndex, secondIndex), 1);
       oppHands.push([c1, c2]);
     }
 
-    const fullBoard = board.concat(deck.slice(cursor, cursor + needBoard));
+    const fullBoard = board.concat(deck.slice(0, needBoard));
 
     const heroScore = evaluateHand([...heroCards, ...fullBoard]).score;
     let bestOpp = -Infinity;
@@ -147,6 +167,11 @@ export interface RangeEquityOptions {
    * strongest holdings would have raised) — which matters multiway.
    */
   cappedCallers?: number;
+  /**
+   * Opponents still waiting to act behind the hero. Their post-flop range has
+   * not been narrowed by a bet or call on this street.
+   */
+  unactedOpponents?: number;
   /**
    * Pre-flop combinations still plausible after the observed pre-flop line.
    * A 3-bet pot can pass ~0.12, while a limped pot can pass ~0.7.
@@ -337,9 +362,13 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
 
   // Caller range: capped just below the raising range (their nut combos would
   // have raised, so callers hold medium-strength hands).
+  const unactedOpponents = Math.min(
+    Math.max(0, opts.unactedOpponents ?? 0),
+    opponentCount,
+  );
   const cappedCallers = Math.min(
     Math.max(0, opts.cappedCallers ?? 0),
-    Math.max(0, opponentCount - 1),
+    Math.max(0, opponentCount - unactedOpponents - 1),
   );
   let callerPool: [Card, Card][] = [];
   if (cappedCallers > 0) {
@@ -347,6 +376,7 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     callerPool = combos.slice(valueCount, Math.min(combos.length, valueCount + span)).map((c) => c.cards);
     if (callerPool.length === 0) callerPool = valuePool;
   }
+  const unactedPool = combos.map((combo) => combo.cards);
 
   const knownIds = known.map(cardId);
 
@@ -383,8 +413,14 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     const oppHands: [Card, Card][] = [];
 
     for (let o = 0; o < opponentCount; o++) {
+      // Players behind have taken no post-flop action, so retain their broad
+      // pre-flop range instead of being mistaken for additional bettors.
+      if (o >= opponentCount - unactedOpponents) {
+        oppHands.push(drawFrom(unactedPool, usedIds));
+        continue;
+      }
       // The last `cappedCallers` opponents are passive callers with capped ranges.
-      if (o >= opponentCount - cappedCallers) {
+      if (o >= opponentCount - unactedOpponents - cappedCallers) {
         oppHands.push(drawFrom(callerPool, usedIds));
         continue;
       }

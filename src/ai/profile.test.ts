@@ -5,8 +5,9 @@ import {
   updateHeroProfile,
   type HandSummary,
 } from './profile';
+import { applyAction, startHand, type SeatInit } from '../engine/game';
 import { parseCards } from '../engine/deck';
-import type { GameState } from '../engine/gameTypes';
+import type { GameConfig, GameState } from '../engine/gameTypes';
 
 function baseSummary(partial: Partial<HandSummary>): HandSummary {
   return {
@@ -84,5 +85,39 @@ describe('updateHeroProfile — new exploit dimensions', () => {
       big: true,
       weak: false,
     });
+  });
+
+  it('records a folded-to button open as a steal but not a limped-pot isolation', () => {
+    const config: GameConfig = {
+      seatCount: 6,
+      blindLevel: 1,
+      startingStackBB: 100,
+      difficulty: 'hard',
+    };
+    const seats: SeatInit[] = Array.from({ length: 6 }, (_, id) => ({
+      id,
+      name: `P${id}`,
+      isHero: id === 2,
+      stack: 200,
+    }));
+
+    let unopened = startHand(config, seats, 0, 1, () => 0.42);
+    unopened = applyAction(unopened, { type: 'fold', amount: 0 });
+    unopened = applyAction(unopened, { type: 'fold', amount: 0 });
+    unopened = applyAction(unopened, { type: 'fold', amount: 0 });
+    unopened = applyAction(unopened, { type: 'raise', amount: 6 });
+    unopened = applyAction(unopened, { type: 'fold', amount: 0 });
+    unopened = applyAction(unopened, { type: 'fold', amount: 0 });
+    expect(summarizePlayerHand(unopened, 2).facedSteal).toBe(true);
+
+    let limped = startHand(config, seats, 0, 2, () => 0.42);
+    limped = applyAction(limped, { type: 'call', amount: 0 });
+    limped = applyAction(limped, { type: 'fold', amount: 0 });
+    limped = applyAction(limped, { type: 'fold', amount: 0 });
+    limped = applyAction(limped, { type: 'raise', amount: 6 });
+    limped = applyAction(limped, { type: 'fold', amount: 0 });
+    limped = applyAction(limped, { type: 'fold', amount: 0 });
+    limped = applyAction(limped, { type: 'fold', amount: 0 });
+    expect(summarizePlayerHand(limped, 2).facedSteal).toBe(false);
   });
 });

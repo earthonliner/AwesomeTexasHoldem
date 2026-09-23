@@ -87,6 +87,25 @@ describe('legal actions', () => {
     expect(progressed.history[progressed.history.length - 1]?.type).toBe('call');
     expect(progressed.toAct).not.toBe(0);
   });
+
+  it('cumulative short all-ins reopen action after a full raise increment', () => {
+    const seats: SeatInit[] = [
+      { id: 0, name: 'Short button', isHero: false, stack: 8 },
+      { id: 1, name: 'Short SB', isHero: false, stack: 10 },
+      { id: 2, name: 'BB', isHero: false, stack: 200 },
+      { id: 3, name: 'Opener', isHero: true, stack: 200 },
+    ];
+    let s = startHand(config, seats, 0, 1, seeded(52));
+    s = applyAction(s, { type: 'raise', amount: 6 }); // full +4
+    s = applyAction(s, { type: 'allin', amount: 8 }); // short +2
+    s = applyAction(s, { type: 'allin', amount: 10 }); // cumulative +4
+    s = applyAction(s, { type: 'fold', amount: 0 });
+
+    expect(s.toAct).toBe(3);
+    const legal = getLegalActions(s, 3);
+    expect(legal.callAmount).toBe(4);
+    expect(legal.canRaise).toBe(true);
+  });
 });
 
 describe('full hand flow', () => {

@@ -74,11 +74,20 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     const openerIndex = game.players.findIndex((p) => p.id === open.playerId);
     const openerPosition = openerIndex >= 0 ? tablePositionFor(game, openerIndex) : 'middle';
     const isLateOpen = openerPosition === 'co' || openerPosition === 'btn' || openerPosition === 'sb';
+    const potWasUnopened = preflop
+      .slice(0, firstRaiseIndex)
+      .every((action) => action.type === 'fold');
     const playerHadNotEntered = preflop
       .slice(0, firstRaiseIndex)
       .every((a) => a.playerId !== playerId || a.type === 'check');
     const response = preflop.slice(firstRaiseIndex + 1).find((a) => a.playerId === playerId);
-    if (isLateOpen && playerHadNotEntered && response?.toCall && response.toCall > 0) {
+    if (
+      potWasUnopened &&
+      isLateOpen &&
+      playerHadNotEntered &&
+      response?.toCall &&
+      response.toCall > 0
+    ) {
       facedSteal = true;
       heroFoldedToSteal = response.type === 'fold';
     }

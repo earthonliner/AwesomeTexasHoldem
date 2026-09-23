@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { startHand, applyAction, type SeatInit } from '../engine/game';
 import type { GameConfig } from '../engine/gameTypes';
-import { deriveLineContext, positionFactorFor } from './line';
+import { deriveLineContext, positionFactorFor, tablePositionFor } from './line';
 
 function seeded(seed: number): () => number {
   let a = seed >>> 0;
@@ -105,6 +105,18 @@ describe('positionFactorFor', () => {
     expect(positionFactorFor(g, 5)).toBeGreaterThan(positionFactorFor(g, 3)); // CO later than UTG
     expect(positionFactorFor(g, 3)).toBeGreaterThan(positionFactorFor(g, 2)); // UTG later than BB
     expect(positionFactorFor(g, 5)).toBeCloseTo(0.8, 5);
+  });
+
+  it('assigns all 6-max table positions without treating blinds as middle seats', () => {
+    const g = startHand(cfg6, six, 0, 1, seeded(44));
+    expect(g.players.map((_, i) => tablePositionFor(g, i))).toEqual([
+      'btn',
+      'sb',
+      'bb',
+      'early',
+      'hj',
+      'co',
+    ]);
   });
 
   it('ignores seats that sit out', () => {

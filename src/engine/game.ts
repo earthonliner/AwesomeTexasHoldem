@@ -78,6 +78,7 @@ export function startHand(
     streetCommitted: 0,
     totalCommitted: 0,
     hasActed: false,
+    actedAtBet: 0,
     lastAction: null,
     sittingOut: (s.sittingOut ?? false) || s.stack <= 0,
   }));
@@ -160,9 +161,13 @@ export function getLegalActions(state: GameState, playerIndex: number): LegalAct
 
   const canAggress = p.stack > toCall; // has chips beyond a call to put in
   // A short all-in raise makes prior callers/raisers owe the difference, but it
-  // does not reopen their raise rights. A player who previously checked still
-  // retains the option to raise a first (even undersized all-in) wager.
-  const raiseRightsOpen = !p.hasActed || p.lastAction === 'check';
+  // only reopens their raise rights once one or more short all-ins cumulatively
+  // add up to a full raise. A prior checker retains the option to raise a first
+  // undersized wager.
+  const cumulativelyReopened =
+    p.hasActed && state.currentBet - p.actedAtBet >= state.minRaise - 1e-9;
+  const raiseRightsOpen =
+    !p.hasActed || p.lastAction === 'check' || cumulativelyReopened;
   return {
     canFold: true,
     canCheck,
@@ -277,6 +282,7 @@ export function applyAction(state: GameState, action: PlayerAction): GameState {
   }
 
   p.hasActed = true;
+  p.actedAtBet = next.currentBet;
   record.type = p.lastAction ?? actionType;
   next.history.push(record);
 
@@ -358,6 +364,7 @@ function advanceStreet(state: GameState): void {
   for (const p of state.players) {
     p.streetCommitted = 0;
     p.hasActed = false;
+    p.actedAtBet = 0;
     if (!p.folded && !p.allIn) p.lastAction = null;
   }
 

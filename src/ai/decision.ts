@@ -430,6 +430,8 @@ function decidePreflop(
 
   // Large raises/all-ins are equity-vs-range decisions, not VPIP cutoffs.
   const effective = Math.max(1, Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack));
+  const effectiveDepthBB = (effective + ctx.totalCommitted) / bigBlind;
+  reason.push(`eff=${effectiveDepthBB.toFixed(0)}bb`);
   const committedCall =
     toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo;
   if (committedCall) {
@@ -506,21 +508,55 @@ function decidePreflop(
   if (potType === 'threeBet' || raises === 2) {
     const inPosition = ctx.inPositionVsAggressor ?? ctx.positionFactor >= 0.65;
     const sizePenalty = clamp(1.15 - Math.max(0, wagerBB - 8) * 0.035, 0.65, 1.1);
+    const shallowPressure = clamp((70 - effectiveDepthBB) / 40, 0, 1);
+    const deepRealisation = clamp((effectiveDepthBB - 120) / 180, 0, 1);
+    const playableDeep =
+      ctx.hole[0].rank === ctx.hole[1].rank ||
+      isSuitedAce(ctx.hole[0], ctx.hole[1]) ||
+      isSuitedConnector(ctx.hole[0], ctx.hole[1], 2);
+    const depthFactor =
+      1 -
+      shallowPressure * 0.24 * p.stackReactivity +
+      deepRealisation * 0.2 * p.stackReactivity;
     const continueRange = clamp(
-      (inPosition ? 0.13 : 0.105) * sizePenalty * style,
+      (inPosition ? 0.13 : 0.105) * sizePenalty * style * depthFactor +
+        (playableDeep ? deepRealisation * 0.025 * p.stackReactivity : 0),
       0.055,
-      0.18,
+      0.22,
     );
+    const bluff4Chance =
+      p.bluff *
+      (0.3 + shallowPressure * 0.38 - deepRealisation * 0.14) *
+      exploit.foldPressure;
     const bluff4 =
       mayRaise &&
       isFourBetBluff(ctx) &&
-      rng() < p.bluff * 0.3 * exploit.foldPressure;
+      rng() < bluff4Chance;
     if (strength < 1 - continueRange && !bluff4) {
       return mk('fold', 0, rng, false, [...reason, 'pf-fold-vs-3bet']);
     }
 
-    const value4 = strength >= 0.968;
+    const value4Threshold =
+      0.968 - shallowPressure * 0.022 + deepRealisation * 0.006;
+    const value4 = strength >= value4Threshold;
     if (mayRaise && (value4 || bluff4)) {
+      if (effectiveDepthBB <= 50 && wagerBB >= 7.5) {
+        const target = Math.min(
+          ctx.maxRaiseTo,
+          Math.max(
+            ctx.minRaiseTo,
+            Math.round(ctx.streetCommitted + effective),
+          ),
+        );
+        return mk(
+          target >= ctx.maxRaiseTo ? 'allin' : 'raise',
+          target,
+          rng,
+          bluff4,
+          [...reason, bluff4 ? 'pf-shallow-4bet-bluff' : 'pf-shallow-4bet-value'],
+          true,
+        );
+      }
       const { amount, allIn } = sizeRaise(
         ctx,
         0.8,
@@ -542,15 +578,27 @@ function decidePreflop(
     return mk('call', 0, rng, false, [...reason, 'pf-call-3bet'], true);
   }
 
+  const shallowStackOff = clamp((75 - effectiveDepthBB) / 45, 0, 1);
+  const deepFourBetPlay = clamp((effectiveDepthBB - 160) / 180, 0, 1);
   const continueRange = clamp(
-    0.05 * (ctx.aggressorIsHero ? exploit.rangeMult : 1),
+    0.05 *
+      (ctx.aggressorIsHero ? exploit.rangeMult : 1) *
+      (
+        1 +
+        shallowStackOff * 0.5 * p.stackReactivity +
+        deepFourBetPlay * 0.22 * p.stackReactivity
+      ),
     0.035,
-    0.085,
+    0.1,
   );
   if (strength < 1 - continueRange) {
     return mk('fold', 0, rng, false, [...reason, 'pf-fold-vs-4bet']);
   }
-  if (mayRaise && strength >= 0.986 && rng() < 0.72) {
+  const fiveBetThreshold =
+    0.986 - shallowStackOff * 0.018 + deepFourBetPlay * 0.004;
+  const fiveBetFrequency =
+    0.72 + shallowStackOff * 0.2 - deepFourBetPlay * 0.12;
+  if (mayRaise && strength >= fiveBetThreshold && rng() < fiveBetFrequency) {
     const { amount, allIn } = sizeRaise(ctx, 0.8, rng, true, Infinity, 0, 2.05);
     return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'pf-fivebet-value'], true);
   }
@@ -787,6 +835,7 @@ function decidePostflop(
     rangeFraction,
     bluffShare,
     cappedCallers: alreadyCalled,
+    unactedOpponents: facingBet ? Math.max(0, ctx.playersBehind ?? 0) : 0,
     preflopRangeFraction: preflopRange,
   }).equity;
 

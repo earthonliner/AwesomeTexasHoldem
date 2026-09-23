@@ -29,14 +29,33 @@ const STRAIGHT_WINDOWS: Rank[][] = [
   [14, 13, 12, 11, 10],
 ];
 
-function straightCompletionRanks(cards: Card[]): Set<Rank> {
-  const ranks = new Set(cards.map((c) => c.rank));
-  const missing = new Set<Rank>();
+function bestStraightHigh(ranks: ReadonlySet<Rank>): number {
+  let best = 0;
   for (const window of STRAIGHT_WINDOWS) {
-    const absent = window.filter((rank) => !ranks.has(rank));
-    if (absent.length === 1) missing.add(absent[0]);
+    if (!window.every((rank) => ranks.has(rank))) continue;
+    const high = window[0] === 14 && window[1] === 5 ? 5 : window[0];
+    best = Math.max(best, high);
   }
-  return missing;
+  return best;
+}
+
+function straightCompletionRanks(hole: [Card, Card], board: Card[]): Set<Rank> {
+  const playerRanks = new Set([...hole, ...board].map((c) => c.rank));
+  const candidates = new Set<Rank>();
+  for (const window of STRAIGHT_WINDOWS) {
+    const absent = window.filter((rank) => !playerRanks.has(rank));
+    if (absent.length === 1) candidates.add(absent[0]);
+  }
+  const boardRanks = new Set(board.map((card) => card.rank));
+  return new Set(
+    [...candidates].filter((candidate) => {
+      const heroAfter = new Set(playerRanks);
+      heroAfter.add(candidate);
+      const boardAfter = new Set(boardRanks);
+      boardAfter.add(candidate);
+      return bestStraightHigh(heroAfter) > bestStraightHigh(boardAfter);
+    }),
+  );
 }
 
 function pairKind(hole: [Card, Card], board: Card[], pairRank?: Rank): HandFeatures['pairKind'] {
@@ -70,7 +89,8 @@ export function analyseHand(hole: [Card, Card], board: Card[]): HandFeatures {
     : 0;
   const nutFlushDraw = flushDraw && highestDrawCard === 14;
 
-  const completionRanks = board.length < 5 ? straightCompletionRanks(cards) : new Set<Rank>();
+  const completionRanks =
+    board.length < 5 ? straightCompletionRanks(hole, board) : new Set<Rank>();
   const straightDraw = completionRanks.size > 0 && made.category < HandCategory.Straight;
   const openEnded = completionRanks.size >= 2;
   const comboDraw = flushDraw && straightDraw;

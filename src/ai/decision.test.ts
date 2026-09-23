@@ -610,6 +610,45 @@ describe('action-line awareness: check-raise respect', () => {
 });
 
 describe('blocker-aware 4-bet mixing', () => {
+  it('jams a premium over a 3-bet at 40bb but keeps a normal size at 300bb', () => {
+    const spot = {
+      hole: parseCards('As Ad') as [Card, Card],
+      potBefore: 29,
+      toCall: 14,
+      currentBet: 20,
+      streetCommitted: 6,
+      totalCommitted: 6,
+      minRaiseTo: 34,
+      preflopPotType: 'threeBet' as const,
+      preflopRaiseCount: 2,
+    };
+    const shallow = decide({
+      personality: tag,
+      difficulty: 'hard',
+      ctx: ctx({
+        ...spot,
+        stack: 74,
+        effectiveStack: 74,
+        maxRaiseTo: 80,
+      }),
+      rng: seeded(2120),
+    });
+    const deep = decide({
+      personality: tag,
+      difficulty: 'hard',
+      ctx: ctx({
+        ...spot,
+        stack: 594,
+        effectiveStack: 594,
+        maxRaiseTo: 600,
+      }),
+      rng: seeded(2120),
+    });
+    expect(shallow.action).toBe('allin');
+    expect(deep.action).toBe('raise');
+    expect(deep.amount).toBeLessThan(100);
+  });
+
   it('still value 4-bets a normal 18bb 3-bet when stacks are deep', () => {
     for (let s = 0; s < 12; s++) {
       const d = decide({
