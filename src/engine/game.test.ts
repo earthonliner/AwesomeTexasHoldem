@@ -63,6 +63,82 @@ describe('legal actions', () => {
     expect(la.canRaise).toBe(true);
     expect(la.minRaiseTo).toBe(4); // BB + min raise (BB)
   });
+
+  it('a short all-in does not reopen raise rights for a prior raiser', () => {
+    const seats: SeatInit[] = [
+      { id: 0, name: 'A', isHero: true, stack: 200 },
+      { id: 1, name: 'B', isHero: false, stack: 7 },
+      { id: 2, name: 'C', isHero: false, stack: 200 },
+    ];
+    let s = startHand({ ...config, seatCount: 3 }, seats, 0, 1, seeded(51));
+    s = applyAction(s, { type: 'raise', amount: 6 });
+    s = applyAction(s, { type: 'allin', amount: 7 }); // only +1, below full raise
+    s = applyAction(s, { type: 'fold', amount: 0 });
+
+    expect(s.toAct).toBe(0);
+    const legal = getLegalActions(s, 0);
+    expect(legal.canCall).toBe(true);
+    expect(legal.callAmount).toBe(1);
+    expect(legal.canRaise).toBe(false);
+    expect(s.history[s.history.length - 2]?.isFullRaise).toBe(false);
+
+    const progressed = applyAction(s, { type: 'raise', amount: 20 });
+    expect(progressed).not.toBe(s);
+    expect(progressed.history[progressed.history.length - 1]?.type).toBe('call');
+    expect(progressed.toAct).not.toBe(0);
+  });
+
+  it('cumulative short all-ins reopen action after a full raise increment', () => {
+    const seats: SeatInit[] = [
+      { id: 0, name: 'Short button', isHero: false, stack: 10 },
+      { id: 1, name: 'SB', isHero: false, stack: 200 },
+      { id: 2, name: 'BB responder', isHero: false, stack: 200 },
+      { id: 3, name: 'Opener', isHero: true, stack: 200 },
+      { id: 4, name: 'Short caller', isHero: false, stack: 8 },
+    ];
+    let s = startHand({ ...config, seatCount: 5 }, seats, 0, 1, seeded(52));
+    s = applyAction(s, { type: 'raise', amount: 6 }); // full +4
+    s = applyAction(s, { type: 'allin', amount: 8 }); // short +2
+    s = applyAction(s, { type: 'allin', amount: 10 }); // cumulative +4
+    s = applyAction(s, { type: 'fold', amount: 0 });
+    s = applyAction(s, { type: 'call', amount: 0 });
+
+    expect(s.toAct).toBe(3);
+    const legal = getLegalActions(s, 3);
+    expect(legal.callAmount).toBe(4);
+    expect(legal.canRaise).toBe(true);
+  });
+
+  it('does not allow a heads-up raise when every opponent is already all-in', () => {
+    const seats: SeatInit[] = [
+      { id: 0, name: 'Button', isHero: true, stack: 200 },
+      { id: 1, name: 'Short BB', isHero: false, stack: 10 },
+    ];
+    let s = startHand({ ...config, seatCount: 2 }, seats, 0, 1, seeded(53));
+    s = applyAction(s, { type: 'call', amount: 0 });
+    s = applyAction(s, { type: 'allin', amount: 10 });
+
+    expect(s.toAct).toBe(0);
+    const legal = getLegalActions(s, 0);
+    expect(legal.canCall).toBe(true);
+    expect(legal.canRaise).toBe(false);
+  });
+
+  it('does not allow a raise when no remaining stack can exceed the wager', () => {
+    const seats: SeatInit[] = [
+      { id: 0, name: 'Deep button', isHero: true, stack: 200 },
+      { id: 1, name: 'Short SB', isHero: false, stack: 50 },
+      { id: 2, name: 'Short BB', isHero: false, stack: 60 },
+      { id: 3, name: 'UTG jammer', isHero: false, stack: 100 },
+    ];
+    let s = startHand(config, seats, 0, 1, seeded(54));
+    s = applyAction(s, { type: 'allin', amount: 100 });
+
+    expect(s.toAct).toBe(0);
+    const legal = getLegalActions(s, 0);
+    expect(legal.canCall).toBe(true);
+    expect(legal.canRaise).toBe(false);
+  });
 });
 
 describe('full hand flow', () => {

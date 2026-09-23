@@ -1,6 +1,7 @@
 import type { Card } from './types';
 import { makeDeck, shuffle, cardId, type Rng, defaultRng } from './deck';
 import { evaluateHand } from './handEvaluator';
+import { preflopPercentile, preflopScore } from './preflopStrength';
 
 export interface EquityResult {
   /** Probability the hero strictly wins. */
@@ -39,20 +40,6 @@ function removeKnown(deck: Card[], known: Card[]): Card[] {
  * A cheap pre-flop hand-strength heuristic (0..1) used only to bias the 'range'
  * sampling mode toward plausible opponent holdings. Not used for evaluation.
  */
-function preflopStrength(a: Card, b: Card): number {
-  const hi = Math.max(a.rank, b.rank);
-  const lo = Math.min(a.rank, b.rank);
-  const pair = a.rank === b.rank;
-  const suited = a.suit === b.suit;
-  const gap = hi - lo;
-
-  let s = (hi + lo) / 28; // high-card weight
-  if (pair) s += 0.35 + (hi - 2) * 0.02;
-  if (suited) s += 0.06;
-  if (!pair && gap <= 2) s += 0.05; // connectedness
-  return Math.min(1, s);
-}
-
 /**
  * Monte Carlo equity estimation. Deals random opponent hands and runouts, then
  * tallies hero results. Deterministic when given a seeded `rng`.
@@ -69,7 +56,15 @@ export function estimateEquity(opts: EquityOptions): EquityResult {
 
   const known = [...heroCards, ...board];
   const baseDeck = removeKnown(makeDeck(), known);
-  const needBoard = 5 - board.length;
+  const needBoard = Math.max(0, 5 - board.length);
+  const maxOpponents = Math.floor((baseDeck.length - needBoard) / 2);
+  if (maxOpponents < 1) {
+    throw new RangeError('Not enough unknown cards to deal an opponent hand');
+  }
+  const opponentCount = Math.min(
+    maxOpponents,
+    Math.max(1, Math.floor(opponents)),
+  );
 
   let wins = 0;
   let ties = 0;
@@ -78,27 +73,39 @@ export function estimateEquity(opts: EquityOptions): EquityResult {
 
   for (let iter = 0; iter < iterations; iter++) {
     const deck = shuffle(baseDeck.slice(), rng);
-    let cursor = 0;
 
     const oppHands: [Card, Card][] = [];
-    for (let o = 0; o < opponents; o++) {
-      let c1 = deck[cursor++];
-      let c2 = deck[cursor++];
+    for (let o = 0; o < opponentCount; o++) {
+      let firstIndex = deck.length - 1;
+      let secondIndex = deck.length - 2;
 
       if (mode === 'range') {
-        // Rejection sampling: bias toward stronger hands but cap attempts so we
-        // never loop forever when the deck is depleted.
-        let attempts = 0;
-        while (attempts < 4 && preflopStrength(c1, c2) < 0.3 + rng() * 0.3) {
-          c1 = deck[cursor++ % deck.length];
-          c2 = deck[cursor++ % deck.length];
-          attempts++;
+        // Try several candidate pairs without consuming rejected cards. The
+        // old cursor-based rejection sampler could reuse cards and exhaust the
+        // future board in large multiway pots.
+        for (let attempt = 0; attempt < 5; attempt++) {
+          firstIndex = Math.floor(rng() * deck.length);
+          secondIndex = Math.floor(rng() * (deck.length - 1));
+          if (secondIndex >= firstIndex) secondIndex++;
+          const candidateA = deck[firstIndex];
+          const candidateB = deck[secondIndex];
+          if (
+            preflopPercentile(candidateA, candidateB) >= 0.45 + rng() * 0.35 ||
+            attempt === 4
+          ) {
+            break;
+          }
         }
       }
+
+      const c1 = deck[firstIndex];
+      const c2 = deck[secondIndex];
+      deck.splice(Math.max(firstIndex, secondIndex), 1);
+      deck.splice(Math.min(firstIndex, secondIndex), 1);
       oppHands.push([c1, c2]);
     }
 
-    const fullBoard = board.concat(deck.slice(cursor, cursor + needBoard));
+    const fullBoard = board.concat(deck.slice(0, needBoard));
 
     const heroScore = evaluateHand([...heroCards, ...fullBoard]).score;
     let bestOpp = -Infinity;
@@ -160,11 +167,139 @@ export interface RangeEquityOptions {
    * strongest holdings would have raised) — which matters multiway.
    */
   cappedCallers?: number;
+  /**
+   * Opponents still waiting to act behind the hero. Their post-flop range has
+   * not been narrowed by a bet or call on this street.
+   */
+  unactedOpponents?: number;
+  /**
+   * Pre-flop combinations still plausible after the observed pre-flop line.
+   * A 3-bet pot can pass ~0.12, while a limped pot can pass ~0.7.
+   */
+  preflopRangeFraction?: number;
 }
 
 export interface RangeEquityResult extends EquityResult {
   /** Number of two-card combos in the assumed value range. */
   rangeCombos: number;
+}
+
+interface RankedCombo {
+  cards: [Card, Card];
+  score: number;
+  preflopPercentile: number;
+}
+
+const BOARD_COMBO_CACHE_LIMIT = 12;
+const boardComboCache = new Map<string, RankedCombo[]>();
+
+function straightCompletionCount(cards: Card[]): number {
+  const ranks = new Set(cards.map((c) => c.rank));
+  const windows: Card['rank'][][] = [
+    [14, 5, 4, 3, 2],
+    [6, 5, 4, 3, 2],
+    [7, 6, 5, 4, 3],
+    [8, 7, 6, 5, 4],
+    [9, 8, 7, 6, 5],
+    [10, 9, 8, 7, 6],
+    [11, 10, 9, 8, 7],
+    [12, 11, 10, 9, 8],
+    [13, 12, 11, 10, 9],
+    [14, 13, 12, 11, 10],
+  ];
+  const missing = new Set<Card['rank']>();
+  for (const window of windows) {
+    const absent = window.filter((rank) => !ranks.has(rank));
+    if (absent.length === 1) missing.add(absent[0]);
+  }
+  return missing.size;
+}
+
+function drawPotential(a: Card, b: Card, board: Card[]): number {
+  if (board.length >= 5) return 0;
+  const cards = [a, b, ...board];
+  const suits = new Map<string, number>();
+  for (const card of cards) suits.set(card.suit, (suits.get(card.suit) ?? 0) + 1);
+  const flushSuit = [...suits.entries()].find(([, count]) => count === 4)?.[0];
+  const flushDraw = !!flushSuit && (a.suit === flushSuit || b.suit === flushSuit);
+  const straightCompletions = straightCompletionCount(cards);
+  const overcards = [a, b].filter((c) => c.rank > Math.max(...board.map((x) => x.rank))).length;
+  return (
+    (flushDraw ? (a.rank === 14 || b.rank === 14 ? 78 : 66) : 0) +
+    (straightCompletions >= 2 ? 58 : straightCompletions === 1 ? 30 : 0) +
+    overcards * 7
+  );
+}
+
+function postflopRangeScore(a: Card, b: Card, board: Card[]): number {
+  const made = evaluateHand([a, b, ...board]);
+  const kicker = made.tiebreakers.reduce((sum, rank, i) => sum + rank / 15 ** i, 0);
+  return made.category * 110 + kicker + drawPotential(a, b, board);
+}
+
+function bluffCandidateScore(a: Card, b: Card, board: Card[]): number {
+  if (board.length < 3) return -preflopScore(a, b);
+  const made = evaluateHand([a, b, ...board]);
+  if (board.length < 5) {
+    return drawPotential(a, b, board) - made.category * 25;
+  }
+
+  let blockers = 0;
+  const suits = new Map<string, number>();
+  for (const card of board) suits.set(card.suit, (suits.get(card.suit) ?? 0) + 1);
+  for (const [suit, count] of suits) {
+    if (count >= 3) {
+      if ([a, b].some((c) => c.suit === suit && c.rank === 14)) blockers += 60;
+      else if ([a, b].some((c) => c.suit === suit && c.rank === 13)) blockers += 35;
+    }
+  }
+  const pairedRanks = board
+    .filter((card, i) => board.findIndex((other) => other.rank === card.rank) !== i)
+    .map((card) => card.rank);
+  if ([a, b].some((card) => pairedRanks.includes(card.rank))) blockers += 25;
+  if (a.rank === 14 || b.rank === 14) blockers += 8;
+  return blockers - made.category * 35;
+}
+
+/**
+ * Ranking ~1,000 candidate holdings is much more expensive than sampling them.
+ * The ranking depends on the board, not on the hero's cards or inferred range,
+ * so keep a small LRU and apply those cheap filters per decision.
+ */
+function rankedCombosForBoard(board: Card[]): RankedCombo[] {
+  const key = board
+    .map(cardId)
+    .sort((a, b) => a - b)
+    .join(',');
+  const cached = boardComboCache.get(key);
+  if (cached) {
+    boardComboCache.delete(key);
+    boardComboCache.set(key, cached);
+    return cached;
+  }
+
+  const available = removeKnown(makeDeck(), board);
+  const combos: RankedCombo[] = [];
+  for (let i = 0; i < available.length; i++) {
+    for (let j = i + 1; j < available.length; j++) {
+      const a = available[i];
+      const b = available[j];
+      combos.push({
+        cards: [a, b],
+        score: board.length >= 3
+          ? postflopRangeScore(a, b, board)
+          : preflopScore(a, b),
+        preflopPercentile: preflopPercentile(a, b),
+      });
+    }
+  }
+  combos.sort((x, y) => y.score - x.score);
+  boardComboCache.set(key, combos);
+  if (boardComboCache.size > BOARD_COMBO_CACHE_LIMIT) {
+    const oldest = boardComboCache.keys().next().value;
+    if (oldest !== undefined) boardComboCache.delete(oldest);
+  }
+  return combos;
 }
 
 /**
@@ -181,43 +316,68 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
 
   const known = [...heroCards, ...board];
   const remaining = removeKnown(makeDeck(), known);
-
-  // Rank every possible opponent combo by strength given the current board.
-  const combos: { cards: [Card, Card]; score: number }[] = [];
-  for (let i = 0; i < remaining.length; i++) {
-    for (let j = i + 1; j < remaining.length; j++) {
-      const a = remaining[i];
-      const b = remaining[j];
-      const score = board.length >= 3 ? evaluateHand([a, b, ...board]).score : preflopStrength(a, b);
-      combos.push({ cards: [a, b], score });
-    }
+  const needBoard = Math.max(0, 5 - board.length);
+  const maxOpponents = Math.floor((remaining.length - needBoard) / 2);
+  if (maxOpponents < 1) {
+    throw new RangeError('Not enough unknown cards to deal an opponent hand');
   }
-  combos.sort((x, y) => y.score - x.score);
+  const opponentCount = Math.min(
+    maxOpponents,
+    Math.max(1, Math.floor(opponents)),
+  );
+
+  const preflopRangeFraction = Math.min(1, Math.max(0.03, opts.preflopRangeFraction ?? 1));
+
+  // Rank every plausible opponent combo by made strength plus draw potential.
+  // The pre-flop filter carries the earlier action line into later streets
+  // instead of rebuilding a range from the board alone.
+  const heroIds = new Set(heroCards.map(cardId));
+  const combos = rankedCombosForBoard(board).filter(
+    (combo) =>
+      !heroIds.has(cardId(combo.cards[0])) &&
+      !heroIds.has(cardId(combo.cards[1])) &&
+      combo.preflopPercentile >= 1 - preflopRangeFraction,
+  );
 
   // Value range: the strongest `rangeFraction` of combos.
-  const floor = Math.min(combos.length, Math.max(opponents * 6, 12));
+  const floor = Math.min(combos.length, Math.max(opponentCount * 6, 12));
   const wanted = Math.round(rangeFraction * combos.length);
   const valueCount = Math.min(combos.length, Math.max(floor, wanted));
   const valuePool = combos.slice(0, valueCount).map((c) => c.cards);
 
-  // Bluff range: the weakest combos (busted draws / air) the opponent might bet.
+  // Bluff range: draws on flop/turn and blocker-rich low-showdown hands on the
+  // river, rather than blindly taking the absolute bottom of the deck.
   let bluffPool: [Card, Card][] = [];
   if (bluffShare > 0) {
-    const bluffCount = Math.min(combos.length, Math.max(opponents * 6, Math.round(0.4 * combos.length)));
-    bluffPool = combos.slice(combos.length - bluffCount).map((c) => c.cards);
+    const bluffCount = Math.min(combos.length, Math.max(opponentCount * 6, Math.round(0.4 * combos.length)));
+    bluffPool = combos
+      .slice(valueCount)
+      .sort((x, y) => bluffCandidateScore(y.cards[0], y.cards[1], board) - bluffCandidateScore(x.cards[0], x.cards[1], board))
+      .slice(0, bluffCount)
+      .map((c) => c.cards);
+    if (bluffPool.length === 0) {
+      bluffPool = combos.slice(combos.length - bluffCount).map((c) => c.cards);
+    }
   }
 
   // Caller range: capped just below the raising range (their nut combos would
   // have raised, so callers hold medium-strength hands).
-  const cappedCallers = Math.min(Math.max(0, opts.cappedCallers ?? 0), Math.max(0, opponents - 1));
+  const unactedOpponents = Math.min(
+    Math.max(0, opts.unactedOpponents ?? 0),
+    opponentCount,
+  );
+  const cappedCallers = Math.min(
+    Math.max(0, opts.cappedCallers ?? 0),
+    Math.max(0, opponentCount - unactedOpponents - 1),
+  );
   let callerPool: [Card, Card][] = [];
   if (cappedCallers > 0) {
-    const span = Math.max(opponents * 6, Math.round(0.35 * combos.length));
+    const span = Math.max(opponentCount * 6, Math.round(0.35 * combos.length));
     callerPool = combos.slice(valueCount, Math.min(combos.length, valueCount + span)).map((c) => c.cards);
     if (callerPool.length === 0) callerPool = valuePool;
   }
+  const unactedPool = combos.map((combo) => combo.cards);
 
-  const needBoard = 5 - board.length;
   const knownIds = known.map(cardId);
 
   let wins = 0;
@@ -226,7 +386,7 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   let equitySum = 0;
 
   const drawFrom = (pool: [Card, Card][], usedIds: Set<number>): [Card, Card] => {
-    for (let attempt = 0; attempt < 16; attempt++) {
+    for (let attempt = 0; pool.length > 0 && attempt < 16; attempt++) {
       const pick = pool[Math.floor(rng() * pool.length)];
       const id1 = cardId(pick[0]);
       const id2 = cardId(pick[1]);
@@ -238,6 +398,9 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     }
     // Fallback: any two unused cards (avoid dropping iterations on collisions).
     const free = remaining.filter((c) => !usedIds.has(cardId(c)));
+    if (free.length < 2) {
+      throw new RangeError('Not enough cards left to sample an opponent hand');
+    }
     const a = free[Math.floor(rng() * free.length)];
     const b = free.filter((c) => cardId(c) !== cardId(a))[Math.floor(rng() * (free.length - 1))];
     usedIds.add(cardId(a));
@@ -249,9 +412,15 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     const usedIds = new Set<number>(knownIds);
     const oppHands: [Card, Card][] = [];
 
-    for (let o = 0; o < opponents; o++) {
+    for (let o = 0; o < opponentCount; o++) {
+      // Players behind have taken no post-flop action, so retain their broad
+      // pre-flop range instead of being mistaken for additional bettors.
+      if (o >= opponentCount - unactedOpponents) {
+        oppHands.push(drawFrom(unactedPool, usedIds));
+        continue;
+      }
       // The last `cappedCallers` opponents are passive callers with capped ranges.
-      if (o >= opponents - cappedCallers) {
+      if (o >= opponentCount - unactedOpponents - cappedCallers) {
         oppHands.push(drawFrom(callerPool, usedIds));
         continue;
       }
@@ -305,9 +474,16 @@ export function estimateBluffShare(args: {
   facingBet: boolean;
   liveOpponents: number;
   wetness: number;
+  betToPot?: number;
+  aggressionCount?: number;
+  street?: 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
 }): number {
   if (!args.facingBet) return 0;
-  const base = 0.34 + args.wetness * 0.12;
+  let base = 0.3 + args.wetness * 0.1;
+  // Large river bets are naturally more polar; repeated raises are value-heavy.
+  if ((args.betToPot ?? 0) >= 0.8) base += 0.05;
+  if (args.street === 'river') base += 0.02;
+  if ((args.aggressionCount ?? 1) >= 2) base *= 0.7;
   const multiwayDamp = Math.sqrt(Math.max(1, args.liveOpponents));
   return Math.min(0.5, Math.max(0.08, base / multiwayDamp));
 }
@@ -322,15 +498,23 @@ export function estimateRangeFraction(args: {
   facingBet: boolean;
   toCall: number;
   pot: number;
+  betToPot?: number;
+  aggressionCount?: number;
+  preflopPotType?: 'unopened' | 'limped' | 'singleRaised' | 'threeBet' | 'fourBetPlus';
 }): number {
   const { street, facingBet, toCall, pot } = args;
   let fraction = facingBet ? 0.38 : 0.62;
 
   // Bigger bets relative to the pot represent stronger, more polarized ranges.
   if (facingBet && pot > 0) {
-    const betRatio = Math.min(2, toCall / pot);
+    const betRatio = Math.min(2, args.betToPot ?? toCall / pot);
     fraction -= Math.min(0.18, betRatio * 0.12);
   }
+
+  if ((args.aggressionCount ?? 1) >= 2) fraction *= 0.72;
+  if (args.preflopPotType === 'threeBet') fraction *= 0.82;
+  if (args.preflopPotType === 'fourBetPlus') fraction *= 0.65;
+  if (args.preflopPotType === 'limped') fraction *= 1.18;
 
   // Ranges narrow as more money goes in on later streets.
   if (street === 'turn') fraction -= 0.04;

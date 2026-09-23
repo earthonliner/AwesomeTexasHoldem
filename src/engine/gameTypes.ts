@@ -35,6 +35,8 @@ export interface PlayerState {
   totalCommitted: number;
   /** Acted since the last aggressive action that reopened betting this street. */
   hasActed: boolean;
+  /** Wager level after this player's most recent action on the street. */
+  actedAtBet: number;
   lastAction: ActionType | null;
   sittingOut: boolean;
 }
@@ -47,6 +49,15 @@ export interface ActionRecord {
   /** Pot size before this action, for replay/analysis. */
   potBefore: number;
   toCall: number;
+  /** Chips moved from this player's stack by the action. */
+  chipsPutIn?: number;
+  /** Increment above the previous wager level (0 for checks/calls). */
+  raiseBy?: number;
+  /**
+   * Whether this aggression met the minimum full-raise increment and therefore
+   * reopened betting. Undefined on passive actions and legacy histories.
+   */
+  isFullRaise?: boolean;
 }
 
 export type HandStatus = 'betting' | 'showdown' | 'complete';

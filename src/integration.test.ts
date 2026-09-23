@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { startHand, applyAction, getLegalActions, totalPot, type SeatInit } from './engine/game';
+import { startHand, applyAction, totalPot, type SeatInit } from './engine/game';
 import type { GameConfig, GameState, Difficulty } from './engine/gameTypes';
 import { BB_CHIPS } from './engine/gameTypes';
 import { generatePersonality } from './ai/personality';
 import { decide } from './ai/decision';
-import { deriveLineContext, positionFactorFor } from './ai/line';
-import type { Card } from './engine/types';
-import type { DecisionContext, Personality } from './ai/types';
+import { buildDecisionContext } from './ai/context';
+import { emptyHeroProfile } from './ai/profile';
+import type { HeroProfile, Personality } from './ai/types';
 
 function seeded(seed: number): () => number {
   let a = seed >>> 0;
@@ -19,29 +19,8 @@ function seeded(seed: number): () => number {
   };
 }
 
-function buildCtx(game: GameState, idx: number): DecisionContext {
-  const p = game.players[idx];
-  const legal = getLegalActions(game, idx);
-  const liveOpp = game.players.filter((x) => !x.folded && !x.sittingOut && x.id !== p.id).length;
-  return {
-    hole: p.hole as [Card, Card],
-    board: [...game.board],
-    liveOpponents: Math.max(1, liveOpp),
-    potBefore: totalPot(game),
-    toCall: game.currentBet - p.streetCommitted,
-    stack: p.stack,
-    bigBlind: game.bigBlind,
-    positionFactor: positionFactorFor(game, idx),
-    street: game.street as DecisionContext['street'],
-    canCheck: legal.canCheck,
-    minRaiseTo: legal.minRaiseTo,
-    maxRaiseTo: legal.maxRaiseTo,
-    streetCommitted: p.streetCommitted,
-    totalCommitted: p.totalCommitted,
-    recentImage: 0.3,
-    ...deriveLineContext(game, idx),
-  };
-}
+const buildCtx = (game: GameState, idx: number) =>
+  buildDecisionContext(game, idx, { recentImage: 0.3 });
 
 function playHand(
   config: GameConfig,
@@ -50,6 +29,7 @@ function playHand(
   button: number,
   difficulty: Difficulty,
   rng: () => number,
+  heroProfile?: HeroProfile,
 ): GameState {
   let game = startHand(config, seats, button, 1, rng);
   let guard = 0;
@@ -57,7 +37,7 @@ function playHand(
     const idx = game.toAct;
     if (idx < 0) break;
     const ctx = buildCtx(game, idx);
-    const d = decide({ personality: personalities[idx], difficulty, ctx, rng, iterations: 80 });
+    const d = decide({ personality: personalities[idx], difficulty, ctx, rng, iterations: 80, heroProfile });
     game = applyAction(game, { type: d.action, amount: d.amount });
   }
   expect(guard).toBeLessThan(500); // never loops forever
@@ -130,7 +110,18 @@ describe('integration: full AI-driven sessions', () => {
     const config: GameConfig = { seatCount: 6, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' };
     const personalities = Array.from({ length: 6 }, (_, i) => generatePersonality('hard', seeded(i + 3)));
     const seats: SeatInit[] = Array.from({ length: 6 }, (_, i) => ({ id: i, name: `P${i}`, isHero: i === 0, stack: 200 }));
-    const game = playHand(config, seats, personalities, 0, 'hard', rng);
+    const profile = {
+      ...emptyHeroProfile(),
+      hands: 60,
+      foldToSteal: 0.8,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 60,
+        stealFaced: 10,
+        stealFacedFolds: 8,
+      },
+    };
+    const game = playHand(config, seats, personalities, 0, 'hard', rng, profile);
     expect(game.status).toBe('complete');
   });
 });

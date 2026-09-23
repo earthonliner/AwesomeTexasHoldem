@@ -1,6 +1,9 @@
 import type { Card } from '../engine/types';
 import type { Difficulty } from '../engine/gameTypes';
 
+export type TablePosition = 'early' | 'middle' | 'hj' | 'co' | 'btn' | 'sb' | 'bb';
+export type PreflopPotType = 'unopened' | 'limped' | 'singleRaised' | 'threeBet' | 'fourBetPlus';
+
 /**
  * A continuous personality vector. Each field is 0..1 and is fixed for the
  * lifetime of an opponent at the table (regenerated only when the table resets).
@@ -48,11 +51,20 @@ export interface DecisionContext {
   canCheck: boolean;
   minRaiseTo: number;
   maxRaiseTo: number;
+  /** Whether betting/raising is legally available (short all-ins may not reopen it). */
+  canRaise?: boolean;
+  /** Current wager level on this street. */
+  currentBet?: number;
   streetCommitted: number;
   /** Chips this player has invested across the whole hand (for stake budgeting). */
   totalCommitted: number;
   /** AI's own recent aggressive image, 0..1 (higher = looks aggressive). */
   recentImage: number;
+  /** Remaining effective stack against the relevant aggressor. */
+  effectiveStack?: number;
+  tableSize?: number;
+  position?: TablePosition;
+  playersBehind?: number;
 
   // ---- Hand story-line (optional; derived from the action history) ----
   /** This player made the last aggressive action on the previous street. */
@@ -61,12 +73,31 @@ export interface DecisionContext {
   villainWasAggressorLastStreet?: boolean;
   /** How many bluffs this player has already fired in this hand. */
   myBluffsThisHand?: number;
+  /** The previous street's aggressive action was explicitly a bluff/semi-bluff. */
+  bluffedLastStreet?: boolean;
   /** The current street's bettor checked earlier this street (check-raise). */
   facingCheckRaise?: boolean;
   /** The current street's last aggressor is the human hero (single-player). */
   aggressorIsHero?: boolean;
+  /** Profiled player responsible for the relevant current/previous aggression. */
+  profiledPlayerId?: number;
+  /** Accurate size of the wager faced relative to the pot before that wager. */
+  betToPot?: number;
+  /** Number of aggressive actions already made on the current street. */
+  streetAggressionCount?: number;
+  /** Previous-street aggressor has actually checked on this street before us. */
+  villainCheckedToMe?: boolean;
+  /** This AI checked earlier on the current street. */
+  checkedThisStreet?: boolean;
+  /** Position relative to the current/previous aggressor after the flop. */
+  inPositionVsAggressor?: boolean;
   /** false when the pot was limped pre-flop (weak, capped opponent ranges). */
   preflopRaised?: boolean;
+  preflopPotType?: PreflopPotType;
+  preflopRaiseCount?: number;
+  limpers?: number;
+  callersAfterRaise?: number;
+  aggressorPositionFactor?: number;
 }
 
 export interface AIDecision {

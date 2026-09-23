@@ -1,13 +1,12 @@
 import { create } from 'zustand';
-import type { Card } from '../engine/types';
 import type { GameConfig, GameState, ActionRecord } from '../engine/gameTypes';
 import { BB_CHIPS } from '../engine/gameTypes';
-import { startHand as engineStartHand, applyAction, getLegalActions, totalPot, type SeatInit } from '../engine/game';
+import { startHand as engineStartHand, applyAction, totalPot, type SeatInit } from '../engine/game';
 import { generatePersonality, describePersonality } from '../ai/personality';
 import { decide } from '../ai/decision';
-import { deriveLineContext, positionFactorFor } from '../ai/line';
-import { updateHeroProfile, emptyHeroProfile } from '../ai/profile';
-import type { DecisionContext, HeroProfile } from '../ai/types';
+import { buildDecisionContext } from '../ai/context';
+import { updateHeroProfile, emptyHeroProfile, summarizePlayerHand } from '../ai/profile';
+import type { HeroProfile } from '../ai/types';
 import { computeHeroAnalysis, computeFoldOutcome, type HeroAnalysis } from '../utils/analysis';
 import { sound, setMuted } from '../utils/sound';
 import { setDisplayBlindLevel, setDisplayChipRatio, formatSigned } from '../utils/format';
@@ -33,6 +32,7 @@ let nextHandTimer: ReturnType<typeof setTimeout> | null = null;
 // Per-hand bluff counts and rolling aggression "image" per AI seat, feeding the
 // hand story-line (barrel plans) and the dynamic-bluff image adjustment.
 let aiBluffCounts: Record<number, number> = {};
+let aiLastBluffStreet: Record<number, GameState['street']> = {};
 const aiImages: Record<number, number> = {};
 
 function clearTimers(): void {
@@ -130,6 +130,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   newTable: () => {
     clearTimers();
     aiBluffCounts = {};
+    aiLastBluffStreet = {};
     for (const k of Object.keys(aiImages)) delete aiImages[Number(k)];
     const { settings } = get();
     const seats = buildSeats(settings);
@@ -176,6 +177,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       lastResultText: '',
         });
     aiBluffCounts = {};
+    aiLastBluffStreet = {};
     tick(set, get);
   },
 
@@ -228,11 +230,24 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   updateSettings: (patch) => {
-    const settings = { ...get().settings, ...patch };
+    const current = get();
+    const settings = { ...current.settings, ...patch };
     setMuted(!settings.sound);
     setDisplayBlindLevel(settings.blindLevel);
     setDisplayChipRatio(settings.chipRatio ?? 1);
-    set({ settings });
+    const seats =
+      patch.difficulty && patch.difficulty !== current.settings.difficulty
+        ? current.seats.map((seat) => {
+            if (seat.isHero) return seat;
+            const personality = generatePersonality(patch.difficulty!, Math.random);
+            return {
+              ...seat,
+              personality,
+              archetype: describePersonality(personality),
+            };
+          })
+        : current.seats;
+    set({ settings, seats });
     persistNow({ ...get(), settings } as GameStore);
   },
 
@@ -294,7 +309,11 @@ function scheduleAI(set: SetFn, get: GetFn, idx: number): void {
   const player = game.players[idx];
   if (!seat.personality) return;
 
-  const ctx = buildDecisionContext(game, idx);
+  const ctx = buildDecisionContext(game, idx, {
+    recentImage: aiImages[player.id] ?? 0.3,
+    bluffCount: aiBluffCounts[player.id] ?? 0,
+    lastBluffStreet: aiLastBluffStreet[player.id],
+  });
   const decision = decide({
     personality: seat.personality,
     difficulty: state.settings.difficulty,
@@ -318,39 +337,15 @@ function scheduleAI(set: SetFn, get: GetFn, idx: number): void {
   aiTimer = setTimeout(() => {
     const cur = get();
     if (!cur.game || cur.game.toAct !== idx) return;
-    if (decision.isBluff) aiBluffCounts[player.id] = (aiBluffCounts[player.id] ?? 0) + 1;
+    if (decision.isBluff) {
+      aiBluffCounts[player.id] = (aiBluffCounts[player.id] ?? 0) + 1;
+      aiLastBluffStreet[player.id] = cur.game.street;
+    }
     playActionSound(decision.action, cur.settings.sound);
     const next = applyAction(cur.game, { type: decision.action, amount: decision.amount });
     set({ game: next, thinkingId: null });
     tick(set, get);
   }, delay);
-}
-
-function buildDecisionContext(game: GameState, idx: number): DecisionContext {
-  const p = game.players[idx];
-  const legal = getLegalActions(game, idx);
-  const liveOpponents = game.players.filter((x) => !x.folded && !x.sittingOut && x.id !== p.id).length;
-  const positionFactor = positionFactorFor(game, idx);
-
-  return {
-    hole: p.hole as [Card, Card],
-    board: [...game.board],
-    liveOpponents: Math.max(1, liveOpponents),
-    potBefore: totalPot(game),
-    toCall: game.currentBet - p.streetCommitted,
-    stack: p.stack,
-    bigBlind: game.bigBlind,
-    positionFactor,
-    street: game.street as DecisionContext['street'],
-    canCheck: legal.canCheck,
-    minRaiseTo: legal.minRaiseTo,
-    maxRaiseTo: legal.maxRaiseTo,
-    streetCommitted: p.streetCommitted,
-    totalCommitted: p.totalCommitted,
-    recentImage: aiImages[p.id] ?? 0.3,
-    ...deriveLineContext(game, idx),
-    myBluffsThisHand: aiBluffCounts[p.id] ?? 0,
-  };
 }
 
 function playActionSound(type: string, enabled: boolean): void {
@@ -414,7 +409,7 @@ function finalize(set: SetFn, get: GetFn): void {
     showdownsWon: state.stats.showdownsWon + (game.revealed.includes(hero.id) && heroWon ? 1 : 0),
   };
 
-  const heroProfile = updateHeroProfile(state.heroProfile, summarizeHeroHand(game, hero.id));
+  const heroProfile = updateHeroProfile(state.heroProfile, summarizePlayerHand(game, hero.id));
   const opponentStats = updateOpponentStats(state.opponentStats, game, hero.id);
 
   // Update each AI's rolling aggression image (feeds dynamic bluff frequency:
@@ -490,56 +485,6 @@ function buildResultText(game: GameState, heroId: number, heroDelta: number): st
   if (youWon && heroDelta > 0) return `你赢得了底池 (${formatSigned(heroDelta)})`;
   if (heroDelta < 0) return `${winnerNames.join('、')} 赢得底池 (${formatSigned(heroDelta)})`;
   return `本手结束`;
-}
-
-function summarizeHeroHand(game: GameState, heroId: number) {
-  const actions = game.history;
-  const heroPreflop = actions.filter((a) => a.playerId === heroId && a.street === 'preflop');
-  const facedSteal = heroPreflop.some((a) => a.toCall > game.bigBlind);
-  const heroFoldedToSteal = facedSteal && heroPreflop.some((a) => a.type === 'fold' && a.toCall > game.bigBlind);
-
-  // Fold-to-cbet: the pre-flop aggressor bet the flop, and the hero responded.
-  let facedCbet = false;
-  let heroFoldedToCbet = false;
-  let pfAggressor = -1;
-  for (const a of actions) {
-    if (a.street === 'preflop' && (a.type === 'raise' || a.type === 'allin')) pfAggressor = a.playerId;
-  }
-  if (pfAggressor >= 0 && pfAggressor !== heroId) {
-    const flop = actions.filter((a) => a.street === 'flop');
-    const cbetIdx = flop.findIndex((a) => a.playerId === pfAggressor && (a.type === 'bet' || a.type === 'raise' || a.type === 'allin'));
-    if (cbetIdx >= 0) {
-      const heroAfter = flop.slice(cbetIdx + 1).find((a) => a.playerId === heroId && a.toCall > 0);
-      if (heroAfter) {
-        facedCbet = true;
-        heroFoldedToCbet = heroAfter.type === 'fold';
-      }
-    }
-  }
-
-  // River honesty / size tell: the hero bet or raised the river and showed down.
-  let riverBetShown: { big: boolean; weak: boolean } | null = null;
-  if (game.revealed.includes(heroId)) {
-    const heroRiverBet = [...game.history]
-      .reverse()
-      .find((a) => a.street === 'river' && a.playerId === heroId && (a.type === 'bet' || a.type === 'raise' || a.type === 'allin'));
-    if (heroRiverBet) {
-      const big = heroRiverBet.amount > Math.max(1, heroRiverBet.potBefore) * 0.55;
-      const weak = !game.payouts.some((p) => p.playerId === heroId && p.amount > 0);
-      riverBetShown = { big, weak };
-    }
-  }
-
-  return {
-    heroId,
-    actions,
-    facedSteal,
-    heroFoldedToSteal,
-    heroReachedShowdown: game.revealed.includes(heroId),
-    facedCbet,
-    heroFoldedToCbet,
-    riverBetShown,
-  };
 }
 
 function updateOpponentStats(

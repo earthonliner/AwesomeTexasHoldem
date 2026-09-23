@@ -1,4 +1,8 @@
 import type { ActionRecord } from '../engine/gameTypes';
+import type { GameState } from '../engine/gameTypes';
+import { evaluateHand } from '../engine/handEvaluator';
+import { HandCategory } from '../engine/types';
+import { tablePositionFor } from './line';
 import type { HeroProfile } from './types';
 
 export function emptyHeroProfile(): HeroProfile {
@@ -50,10 +54,99 @@ export interface HandSummary {
   riverBetShown?: { big: boolean; weak: boolean } | null;
 }
 
+const AGGRESSIVE = new Set(['bet', 'raise', 'allin']);
+
 /**
- * Fold a completed hand's hero actions into the running profile. Uses simple
- * exponential smoothing so the profile adapts but stays stable. Returns a new
- * object (does not mutate the input).
+ * Build an observation summary for any human seat. Shared by local play and
+ * the authoritative LAN room so both modes learn from identical evidence.
+ */
+export function summarizePlayerHand(game: GameState, playerId: number): HandSummary {
+  const actions = game.history;
+  const preflop = actions.filter((a) => a.street === 'preflop');
+  const playerIndex = game.players.findIndex((p) => p.id === playerId);
+  const playerPosition = playerIndex >= 0 ? tablePositionFor(game, playerIndex) : 'middle';
+
+  let facedSteal = false;
+  let heroFoldedToSteal = false;
+  const firstRaiseIndex = preflop.findIndex((a) => AGGRESSIVE.has(a.type));
+  if (firstRaiseIndex >= 0 && (playerPosition === 'sb' || playerPosition === 'bb')) {
+    const open = preflop[firstRaiseIndex];
+    const openerIndex = game.players.findIndex((p) => p.id === open.playerId);
+    const openerPosition = openerIndex >= 0 ? tablePositionFor(game, openerIndex) : 'middle';
+    const isLateOpen = openerPosition === 'co' || openerPosition === 'btn' || openerPosition === 'sb';
+    const potWasUnopened = preflop
+      .slice(0, firstRaiseIndex)
+      .every((action) => action.type === 'fold');
+    const playerHadNotEntered = preflop
+      .slice(0, firstRaiseIndex)
+      .every((a) => a.playerId !== playerId || a.type === 'check');
+    const response = preflop.slice(firstRaiseIndex + 1).find((a) => a.playerId === playerId);
+    if (
+      potWasUnopened &&
+      isLateOpen &&
+      playerHadNotEntered &&
+      response?.toCall &&
+      response.toCall > 0
+    ) {
+      facedSteal = true;
+      heroFoldedToSteal = response.type === 'fold';
+    }
+  }
+
+  let facedCbet = false;
+  let heroFoldedToCbet = false;
+  let preflopAggressor = -1;
+  for (const action of preflop) {
+    if (AGGRESSIVE.has(action.type)) preflopAggressor = action.playerId;
+  }
+  if (preflopAggressor >= 0 && preflopAggressor !== playerId) {
+    const flop = actions.filter((a) => a.street === 'flop');
+    const cbetIndex = flop.findIndex(
+      (a) => a.playerId === preflopAggressor && AGGRESSIVE.has(a.type),
+    );
+    if (cbetIndex >= 0) {
+      const response = flop.slice(cbetIndex + 1).find((a) => a.playerId === playerId && a.toCall > 0);
+      if (response) {
+        facedCbet = true;
+        heroFoldedToCbet = response.type === 'fold';
+      }
+    }
+  }
+
+  let riverBetShown: HandSummary['riverBetShown'] = null;
+  if (game.revealed.includes(playerId) && game.board.length === 5) {
+    const riverBet = [...actions]
+      .reverse()
+      .find((a) => a.street === 'river' && a.playerId === playerId && AGGRESSIVE.has(a.type));
+    const player = game.players.find((p) => p.id === playerId);
+    if (riverBet && player?.hole.length === 2) {
+      const playerHand = evaluateHand([...player.hole, ...game.board]);
+      const boardHand = evaluateHand(game.board);
+      // Losing a value bet is not a bluff. Count only no-showdown-value hands
+      // (high card or playing the board) as weak evidence.
+      const weak =
+        playerHand.category === HandCategory.HighCard || playerHand.score === boardHand.score;
+      const wager = riverBet.chipsPutIn ?? riverBet.amount;
+      const big = wager > Math.max(1, riverBet.potBefore) * 0.55;
+      riverBetShown = { big, weak };
+    }
+  }
+
+  return {
+    heroId: playerId,
+    actions,
+    facedSteal,
+    heroFoldedToSteal,
+    heroReachedShowdown: game.revealed.includes(playerId),
+    facedCbet,
+    heroFoldedToCbet,
+    riverBetShown,
+  };
+}
+
+/**
+ * Fold a completed hand's actions into the running profile. Reported rates use
+ * Bayesian priors, so one rare opportunity cannot create a 0%/100% read.
  */
 export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): HeroProfile {
   const c = { ...profile.counters };
@@ -103,17 +196,18 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
     }
   }
 
-  const ratio = (num: number, den: number, fallback: number) => (den > 0 ? num / den : fallback);
+  const ratio = (num: number, den: number, prior: number, priorWeight: number) =>
+    (num + prior * priorWeight) / (den + priorWeight);
 
   return {
     hands: c.handsDealt,
-    vpip: ratio(c.voluntaryActions, c.handsDealt, profile.vpip),
-    pfr: ratio(c.preflopRaises, c.handsDealt, profile.pfr),
-    foldToSteal: ratio(c.stealFacedFolds, c.stealFaced, profile.foldToSteal),
-    aggression: ratio(c.aggressiveActions, c.aggressiveActions + c.passiveActions, profile.aggression),
-    bluffCaught: ratio(c.riverBetsWeak, c.riverBetsShown, profile.bluffCaught),
-    wentToShowdown: ratio(c.showdowns, c.handsDealt, profile.wentToShowdown),
-    foldToCbet: ratio(c.cbetFolded, c.cbetFaced, profile.foldToCbet),
+    vpip: ratio(c.voluntaryActions, c.handsDealt, 0.3, 8),
+    pfr: ratio(c.preflopRaises, c.handsDealt, 0.18, 8),
+    foldToSteal: ratio(c.stealFacedFolds, c.stealFaced, 0.5, 5),
+    aggression: ratio(c.aggressiveActions, c.aggressiveActions + c.passiveActions, 0.5, 10),
+    bluffCaught: ratio(c.riverBetsWeak, c.riverBetsShown, 0.3, 5),
+    wentToShowdown: ratio(c.showdowns, c.handsDealt, 0.3, 8),
+    foldToCbet: ratio(c.cbetFolded, c.cbetFaced, 0.5, 5),
     counters: c,
   };
 }

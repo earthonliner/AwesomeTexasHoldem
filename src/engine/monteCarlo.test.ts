@@ -68,6 +68,17 @@ describe('estimateEquity', () => {
     const range = estimateEquity({ heroCards: hero('Ks Kd'), opponents: 3, iterations: 3000, rng: seeded(9), mode: 'range' });
     expect(range.win).toBeLessThanOrEqual(random.win + 0.02);
   });
+
+  it('range mode deals unique cards at a full 9-handed table', () => {
+    const result = estimateEquity({
+      heroCards: hero('As Ad'),
+      opponents: 8,
+      iterations: 250,
+      rng: seeded(10),
+      mode: 'range',
+    });
+    expect(result.win + result.tie + result.lose).toBeCloseTo(1, 5);
+  });
 });
 
 describe('estimateEquityVsRange (board-aware opponent range)', () => {
@@ -149,6 +160,29 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
       heroCards, board, opponents: 2, iterations: 3000, rng: seeded(31), rangeFraction: 0.25, cappedCallers: 1,
     });
     expect(oneCapped.equity).toBeGreaterThan(bothTight.equity + 0.03);
+  });
+
+  it('does not assign the bettor range to opponents still waiting behind', () => {
+    const heroCards = hero('Ts Td');
+    const board = parseCards('8c 5d 2h');
+    const allTight = estimateEquityVsRange({
+      heroCards,
+      board,
+      opponents: 3,
+      iterations: 3000,
+      rng: seeded(35),
+      rangeFraction: 0.22,
+    });
+    const twoBehind = estimateEquityVsRange({
+      heroCards,
+      board,
+      opponents: 3,
+      iterations: 3000,
+      rng: seeded(35),
+      rangeFraction: 0.22,
+      unactedOpponents: 2,
+    });
+    expect(twoBehind.equity).toBeGreaterThan(allTight.equity + 0.08);
   });
 
   it('chooses a tighter range when facing a large bet', () => {
