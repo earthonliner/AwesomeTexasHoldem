@@ -48,6 +48,24 @@ describe('deriveLineContext', () => {
     expect(deriveLineContext(g, 0).preflopRaised).toBe(false);
   });
 
+  it('counts the first short all-in as an open but not later under-raises', () => {
+    const shortSeats: SeatInit[] = [
+      { id: 0, name: 'Short BTN', isHero: true, stack: 3 },
+      { id: 1, name: 'Short SB', isHero: false, stack: 4 },
+      { id: 2, name: 'BB', isHero: false, stack: 200 },
+    ];
+    let g = startHand(config, shortSeats, 0, 1, seeded(22));
+    g = applyAction(g, { type: 'allin', amount: 3 }); // +1 over the blind: not a full raise
+    g = applyAction(g, { type: 'allin', amount: 4 }); // another +1 under-raise
+
+    expect(g.history[0].isFullRaise).toBe(false);
+    expect(g.history[1].isFullRaise).toBe(false);
+    const line = deriveLineContext(g, g.toAct);
+    expect(line.preflopRaised).toBe(true);
+    expect(line.preflopRaiseCount).toBe(1);
+    expect(line.preflopPotType).toBe('singleRaised');
+  });
+
   it('detects a check-raise and identifies the hero as aggressor', () => {
     let g = startHand(config, seats, 0, 1, seeded(3));
     while (g.street === 'preflop' && g.toAct >= 0) {

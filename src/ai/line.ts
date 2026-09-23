@@ -139,8 +139,17 @@ export function deriveLineContext(
   }
 
   const preflop = game.history.filter((a) => a.street === 'preflop');
-  const raises = preflop.filter((a) => AGGRESSIVE.has(a.type));
-  const preflopRaiseCount = raises.length;
+  const countedRaises = [];
+  for (const action of preflop) {
+    if (!AGGRESSIVE.has(action.type)) continue;
+    // The first wager above the blind establishes a raised pot even when it is
+    // a short all-in. Later under-raises change the price but do not create a
+    // new 3-bet/4-bet level. Legacy records have no flag and count as before.
+    if (countedRaises.length === 0 || action.isFullRaise !== false) {
+      countedRaises.push(action);
+    }
+  }
+  const preflopRaiseCount = countedRaises.length;
   const firstRaiseIndex = preflop.findIndex((a) => AGGRESSIVE.has(a.type));
   const lastRaiseIndex = (() => {
     for (let i = preflop.length - 1; i >= 0; i--) {

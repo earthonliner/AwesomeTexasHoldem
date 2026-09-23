@@ -10,7 +10,7 @@ import { BB_CHIPS } from '../src/engine/gameTypes';
 import type { PlayerAction, Street } from '../src/engine/types';
 import { generatePersonality } from '../src/ai/personality';
 import { decide } from '../src/ai/decision';
-import { buildDecisionContext } from '../src/ai/context';
+import { buildDecisionContext, resolveProfiledOpponentId } from '../src/ai/context';
 import { emptyHeroProfile, summarizePlayerHand, updateHeroProfile } from '../src/ai/profile';
 import type { HeroProfile, Personality } from '../src/ai/types';
 import { redactGameStateFor } from '../src/online/redact';
@@ -397,10 +397,14 @@ export class Room {
       lastBluffStreet: this.aiLastBluffStreet[seat.seatId],
       profiledPlayerIds: humanIds,
     });
-    const fallbackHuman = game.players.find(
+    const liveHumans = game.players.filter(
       (player) => humanIds.has(player.id) && !player.folded && !player.sittingOut,
-    )?.id;
-    const profileId = ctx.profiledPlayerId ?? fallbackHuman;
+    );
+    const profileId = resolveProfiledOpponentId(
+      ctx.profiledPlayerId,
+      ctx.liveOpponents,
+      liveHumans.map((player) => player.id),
+    );
     const decision = decide({
       personality: seat.personality,
       difficulty: this.config.difficulty,

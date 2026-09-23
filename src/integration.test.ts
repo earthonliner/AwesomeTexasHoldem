@@ -5,7 +5,8 @@ import { BB_CHIPS } from './engine/gameTypes';
 import { generatePersonality } from './ai/personality';
 import { decide } from './ai/decision';
 import { buildDecisionContext } from './ai/context';
-import type { Personality } from './ai/types';
+import { emptyHeroProfile } from './ai/profile';
+import type { HeroProfile, Personality } from './ai/types';
 
 function seeded(seed: number): () => number {
   let a = seed >>> 0;
@@ -28,6 +29,7 @@ function playHand(
   button: number,
   difficulty: Difficulty,
   rng: () => number,
+  heroProfile?: HeroProfile,
 ): GameState {
   let game = startHand(config, seats, button, 1, rng);
   let guard = 0;
@@ -35,7 +37,7 @@ function playHand(
     const idx = game.toAct;
     if (idx < 0) break;
     const ctx = buildCtx(game, idx);
-    const d = decide({ personality: personalities[idx], difficulty, ctx, rng, iterations: 80 });
+    const d = decide({ personality: personalities[idx], difficulty, ctx, rng, iterations: 80, heroProfile });
     game = applyAction(game, { type: d.action, amount: d.amount });
   }
   expect(guard).toBeLessThan(500); // never loops forever
@@ -108,7 +110,18 @@ describe('integration: full AI-driven sessions', () => {
     const config: GameConfig = { seatCount: 6, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' };
     const personalities = Array.from({ length: 6 }, (_, i) => generatePersonality('hard', seeded(i + 3)));
     const seats: SeatInit[] = Array.from({ length: 6 }, (_, i) => ({ id: i, name: `P${i}`, isHero: i === 0, stack: 200 }));
-    const game = playHand(config, seats, personalities, 0, 'hard', rng);
+    const profile = {
+      ...emptyHeroProfile(),
+      hands: 60,
+      foldToSteal: 0.8,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 60,
+        stealFaced: 10,
+        stealFacedFolds: 8,
+      },
+    };
+    const game = playHand(config, seats, personalities, 0, 'hard', rng, profile);
     expect(game.status).toBe('complete');
   });
 });

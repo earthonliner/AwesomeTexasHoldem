@@ -12,6 +12,22 @@ export interface ContextMeta {
   profiledPlayerIds?: ReadonlySet<number>;
 }
 
+/**
+ * Prefer the profile of the player responsible for the current line. With no
+ * such player, a sole profiled opponent is only unambiguous heads-up; in a
+ * multiway pot their tendencies must not leak into AI-vs-AI decisions.
+ */
+export function resolveProfiledOpponentId(
+  lineProfiledId: number | undefined,
+  liveOpponents: number,
+  liveProfiledIds: readonly number[],
+): number | undefined {
+  if (lineProfiledId !== undefined) return lineProfiledId;
+  return liveOpponents === 1 && liveProfiledIds.length === 1
+    ? liveProfiledIds[0]
+    : undefined;
+}
+
 const PREVIOUS_STREET: Partial<Record<Street, Street>> = {
   flop: 'preflop',
   turn: 'flop',

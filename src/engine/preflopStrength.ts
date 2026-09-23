@@ -41,20 +41,21 @@ export function preflopScore(a: Card, b: Card): number {
 
   if (pair) {
     // All pairs retain set value; premiums still separate clearly at the top.
-    return 49 + (hi - 2) * 4.25;
+    return 52 + (hi - 2) * 4.5;
   }
 
   const gap = hi - lo;
   let score = (hi - 2) * 3.2 + (lo - 2) * 1.35;
 
   if (hi === 14) score += 16;
-  else if (hi === 13) score += 10;
-  else if (hi === 12) score += 6;
+  else if (hi === 13) score += 6;
+  else if (hi === 12) score += 4;
 
   if (lo >= 10) score += 10; // two Broadway cards
   if (suited) score += 9;
+  else score -= 9; // reverse-implied-odds penalty for offsuit holdings
 
-  if (gap === 1) score += 13;
+  if (gap === 1) score += 18;
   else if (gap === 2) score += 7;
   else if (gap === 3) score += 3;
   else if (gap >= 5) score -= (gap - 4) * 1.35;

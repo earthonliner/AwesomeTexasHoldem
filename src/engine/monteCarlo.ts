@@ -159,9 +159,18 @@ export interface RangeEquityResult extends EquityResult {
   rangeCombos: number;
 }
 
+interface RankedCombo {
+  cards: [Card, Card];
+  score: number;
+  preflopPercentile: number;
+}
+
+const BOARD_COMBO_CACHE_LIMIT = 12;
+const boardComboCache = new Map<string, RankedCombo[]>();
+
 function straightCompletionCount(cards: Card[]): number {
   const ranks = new Set(cards.map((c) => c.rank));
-  const windows = [
+  const windows: Card['rank'][][] = [
     [14, 5, 4, 3, 2],
     [6, 5, 4, 3, 2],
     [7, 6, 5, 4, 3],
@@ -173,7 +182,7 @@ function straightCompletionCount(cards: Card[]): number {
     [13, 12, 11, 10, 9],
     [14, 13, 12, 11, 10],
   ];
-  const missing = new Set<number>();
+  const missing = new Set<Card['rank']>();
   for (const window of windows) {
     const absent = window.filter((rank) => !ranks.has(rank));
     if (absent.length === 1) missing.add(absent[0]);
@@ -204,6 +213,7 @@ function postflopRangeScore(a: Card, b: Card, board: Card[]): number {
 }
 
 function bluffCandidateScore(a: Card, b: Card, board: Card[]): number {
+  if (board.length < 3) return -preflopScore(a, b);
   const made = evaluateHand([a, b, ...board]);
   if (board.length < 5) {
     return drawPotential(a, b, board) - made.category * 25;
@@ -227,6 +237,47 @@ function bluffCandidateScore(a: Card, b: Card, board: Card[]): number {
 }
 
 /**
+ * Ranking ~1,000 candidate holdings is much more expensive than sampling them.
+ * The ranking depends on the board, not on the hero's cards or inferred range,
+ * so keep a small LRU and apply those cheap filters per decision.
+ */
+function rankedCombosForBoard(board: Card[]): RankedCombo[] {
+  const key = board
+    .map(cardId)
+    .sort((a, b) => a - b)
+    .join(',');
+  const cached = boardComboCache.get(key);
+  if (cached) {
+    boardComboCache.delete(key);
+    boardComboCache.set(key, cached);
+    return cached;
+  }
+
+  const available = removeKnown(makeDeck(), board);
+  const combos: RankedCombo[] = [];
+  for (let i = 0; i < available.length; i++) {
+    for (let j = i + 1; j < available.length; j++) {
+      const a = available[i];
+      const b = available[j];
+      combos.push({
+        cards: [a, b],
+        score: board.length >= 3
+          ? postflopRangeScore(a, b, board)
+          : preflopScore(a, b),
+        preflopPercentile: preflopPercentile(a, b),
+      });
+    }
+  }
+  combos.sort((x, y) => y.score - x.score);
+  boardComboCache.set(key, combos);
+  if (boardComboCache.size > BOARD_COMBO_CACHE_LIMIT) {
+    const oldest = boardComboCache.keys().next().value;
+    if (oldest !== undefined) boardComboCache.delete(oldest);
+  }
+  return combos;
+}
+
+/**
  * Equity vs an estimated opponent range. Opponents are sampled from the top
  * `rangeFraction` of hands ranked by their current strength on the board
  * (pre-flop: ranked by a pre-flop strength heuristic). When `bluffShare > 0` the
@@ -240,26 +291,31 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
 
   const known = [...heroCards, ...board];
   const remaining = removeKnown(makeDeck(), known);
+  const needBoard = Math.max(0, 5 - board.length);
+  const maxOpponents = Math.floor((remaining.length - needBoard) / 2);
+  if (maxOpponents < 1) {
+    throw new RangeError('Not enough unknown cards to deal an opponent hand');
+  }
+  const opponentCount = Math.min(
+    maxOpponents,
+    Math.max(1, Math.floor(opponents)),
+  );
 
   const preflopRangeFraction = Math.min(1, Math.max(0.03, opts.preflopRangeFraction ?? 1));
 
   // Rank every plausible opponent combo by made strength plus draw potential.
   // The pre-flop filter carries the earlier action line into later streets
   // instead of rebuilding a range from the board alone.
-  const combos: { cards: [Card, Card]; score: number }[] = [];
-  for (let i = 0; i < remaining.length; i++) {
-    for (let j = i + 1; j < remaining.length; j++) {
-      const a = remaining[i];
-      const b = remaining[j];
-      if (preflopPercentile(a, b) < 1 - preflopRangeFraction) continue;
-      const score = board.length >= 3 ? postflopRangeScore(a, b, board) : preflopScore(a, b);
-      combos.push({ cards: [a, b], score });
-    }
-  }
-  combos.sort((x, y) => y.score - x.score);
+  const heroIds = new Set(heroCards.map(cardId));
+  const combos = rankedCombosForBoard(board).filter(
+    (combo) =>
+      !heroIds.has(cardId(combo.cards[0])) &&
+      !heroIds.has(cardId(combo.cards[1])) &&
+      combo.preflopPercentile >= 1 - preflopRangeFraction,
+  );
 
   // Value range: the strongest `rangeFraction` of combos.
-  const floor = Math.min(combos.length, Math.max(opponents * 6, 12));
+  const floor = Math.min(combos.length, Math.max(opponentCount * 6, 12));
   const wanted = Math.round(rangeFraction * combos.length);
   const valueCount = Math.min(combos.length, Math.max(floor, wanted));
   const valuePool = combos.slice(0, valueCount).map((c) => c.cards);
@@ -268,7 +324,7 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   // river, rather than blindly taking the absolute bottom of the deck.
   let bluffPool: [Card, Card][] = [];
   if (bluffShare > 0) {
-    const bluffCount = Math.min(combos.length, Math.max(opponents * 6, Math.round(0.4 * combos.length)));
+    const bluffCount = Math.min(combos.length, Math.max(opponentCount * 6, Math.round(0.4 * combos.length)));
     bluffPool = combos
       .slice(valueCount)
       .sort((x, y) => bluffCandidateScore(y.cards[0], y.cards[1], board) - bluffCandidateScore(x.cards[0], x.cards[1], board))
@@ -281,15 +337,17 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
 
   // Caller range: capped just below the raising range (their nut combos would
   // have raised, so callers hold medium-strength hands).
-  const cappedCallers = Math.min(Math.max(0, opts.cappedCallers ?? 0), Math.max(0, opponents - 1));
+  const cappedCallers = Math.min(
+    Math.max(0, opts.cappedCallers ?? 0),
+    Math.max(0, opponentCount - 1),
+  );
   let callerPool: [Card, Card][] = [];
   if (cappedCallers > 0) {
-    const span = Math.max(opponents * 6, Math.round(0.35 * combos.length));
+    const span = Math.max(opponentCount * 6, Math.round(0.35 * combos.length));
     callerPool = combos.slice(valueCount, Math.min(combos.length, valueCount + span)).map((c) => c.cards);
     if (callerPool.length === 0) callerPool = valuePool;
   }
 
-  const needBoard = 5 - board.length;
   const knownIds = known.map(cardId);
 
   let wins = 0;
@@ -298,7 +356,7 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   let equitySum = 0;
 
   const drawFrom = (pool: [Card, Card][], usedIds: Set<number>): [Card, Card] => {
-    for (let attempt = 0; attempt < 16; attempt++) {
+    for (let attempt = 0; pool.length > 0 && attempt < 16; attempt++) {
       const pick = pool[Math.floor(rng() * pool.length)];
       const id1 = cardId(pick[0]);
       const id2 = cardId(pick[1]);
@@ -310,6 +368,9 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     }
     // Fallback: any two unused cards (avoid dropping iterations on collisions).
     const free = remaining.filter((c) => !usedIds.has(cardId(c)));
+    if (free.length < 2) {
+      throw new RangeError('Not enough cards left to sample an opponent hand');
+    }
     const a = free[Math.floor(rng() * free.length)];
     const b = free.filter((c) => cardId(c) !== cardId(a))[Math.floor(rng() * (free.length - 1))];
     usedIds.add(cardId(a));
@@ -321,9 +382,9 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     const usedIds = new Set<number>(knownIds);
     const oppHands: [Card, Card][] = [];
 
-    for (let o = 0; o < opponents; o++) {
+    for (let o = 0; o < opponentCount; o++) {
       // The last `cappedCallers` opponents are passive callers with capped ranges.
-      if (o >= opponents - cappedCallers) {
+      if (o >= opponentCount - cappedCallers) {
         oppHands.push(drawFrom(callerPool, usedIds));
         continue;
       }

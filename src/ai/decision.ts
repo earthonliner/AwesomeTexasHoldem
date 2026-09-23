@@ -65,7 +65,12 @@ function sizeRaise(
   capTarget = Infinity,
   xBetBonus = 0,
   xBetBase = 2.35,
-): { amount: number; allIn: boolean } {
+): {
+  amount: number;
+  allIn: boolean;
+  heroRisk: number;
+  callerContribution: number;
+} {
   const currentLevel = ctx.streetCommitted + ctx.toCall;
   const potAfterCall = ctx.potBefore + ctx.toCall;
   const jitter = 0.9 + rng() * 0.2;
@@ -87,13 +92,23 @@ function sizeRaise(
   target = Math.min(target, Math.floor(capTarget));
   target = Math.max(target, ctx.minRaiseTo);
 
-  if (target >= ctx.maxRaiseTo) return { amount: ctx.maxRaiseTo, allIn: true };
-  if (allowAllIn && target >= ctx.maxRaiseTo * 0.9) {
+  if (target >= ctx.maxRaiseTo) {
+    target = ctx.maxRaiseTo;
+  } else if (allowAllIn && target >= ctx.maxRaiseTo * 0.9) {
     // Already nearly all-in at a commit spot: don't leave dust behind.
-    return { amount: ctx.maxRaiseTo, allIn: true };
+    target = ctx.maxRaiseTo;
+  } else {
+    target = Math.min(target, ctx.maxRaiseTo);
   }
-  target = Math.min(target, ctx.maxRaiseTo);
-  return { amount: target, allIn: target >= ctx.maxRaiseTo };
+
+  const heroRisk = Math.max(0, target - ctx.streetCommitted);
+  const callerContribution = Math.max(0, target - currentLevel);
+  return {
+    amount: target,
+    allIn: target >= ctx.maxRaiseTo,
+    heroRisk,
+    callerContribution,
+  };
 }
 
 /**
@@ -416,7 +431,7 @@ function decidePreflop(
   // Large raises/all-ins are equity-vs-range decisions, not VPIP cutoffs.
   const effective = Math.max(1, Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack));
   const committedCall =
-    toCall >= effective * 0.72 || wagerBB >= 18 || currentLevel >= ctx.maxRaiseTo;
+    toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo;
   if (committedCall) {
     let jamRange =
       wagerBB >= 55 ? 0.045 : wagerBB >= 30 ? 0.07 : wagerBB >= 18 ? 0.11 : 0.17;
@@ -429,7 +444,7 @@ function decidePreflop(
       iterations: difficulty === 'hard' ? 850 : 500,
       rng,
       rangeFraction: jamRange,
-      preflopRangeFraction: jamRange,
+      preflopRangeFraction: 1,
     }).equity;
     const odds = toCall / Math.max(1, potBefore + toCall);
     reason.push(
@@ -496,13 +511,15 @@ function decidePreflop(
       0.055,
       0.18,
     );
-    if (strength < 1 - continueRange) {
+    const bluff4 =
+      mayRaise &&
+      isFourBetBluff(ctx) &&
+      rng() < p.bluff * 0.3 * exploit.foldPressure;
+    if (strength < 1 - continueRange && !bluff4) {
       return mk('fold', 0, rng, false, [...reason, 'pf-fold-vs-3bet']);
     }
 
     const value4 = strength >= 0.968;
-    const bluff4 =
-      isFourBetBluff(ctx) && rng() < p.bluff * 0.3 * exploit.foldPressure;
     if (mayRaise && (value4 || bluff4)) {
       const { amount, allIn } = sizeRaise(
         ctx,
@@ -843,8 +860,15 @@ function decidePostflop(
       !ctx.wasAggressorLastStreet;
     if (floatSpot && mayRaise && opponents <= 2) {
       const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, false);
-      const risk = potBefore * bluffSize;
-      const profitable = actionEV(eq, potBefore, risk, foldEquity) > 0;
+      const sized = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
+      const profitable =
+        actionEV(
+          eq,
+          potBefore,
+          sized.heroRisk,
+          foldEquity,
+          sized.callerContribution,
+        ) > 0;
       const stabChance = clamp(
         (0.28 + (inPosition ? 0.2 : 0) + p.aggression * 0.12) *
           exploit.foldPressure *
@@ -853,7 +877,7 @@ function decidePostflop(
         0.72,
       );
       if (profitable && rng() < stabChance) {
-        const { amount, allIn } = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
+        const { amount, allIn } = sized;
         return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'checked-to-float']);
       }
     }
@@ -866,14 +890,22 @@ function decidePostflop(
       const lastBoardCard = ctx.board[ctx.board.length - 1];
       const highRunout = !!lastBoardCard && lastBoardCard.rank >= 11;
       const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, false);
-      const profitable = actionEV(eq, potBefore, potBefore * bluffSize, foldEquity) > 0;
+      const sized = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
+      const profitable =
+        actionEV(
+          eq,
+          potBefore,
+          sized.heroRisk,
+          foldEquity,
+          sized.callerContribution,
+        ) > 0;
       let barrelChance =
         (street === 'river' ? 0.34 : 0.52) +
         (highRunout ? 0.08 : 0) +
         features.bluffQuality * 0.18;
       barrelChance = clamp(barrelChance * exploit.bluffMult, 0, 0.72);
       if (profitable && rng() < barrelChance) {
-        const { amount, allIn } = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
+        const { amount, allIn } = sized;
         return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'planned-barrel']);
       }
       return mk('check', 0, rng, false, [...reason, 'barrel-giveup']);
@@ -881,12 +913,18 @@ function decidePostflop(
 
     if (mayRaise && bluffFrequency > 0) {
       const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, false);
-      const risk = potBefore * bluffSize;
+      const sized = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
       if (
-        actionEV(eq, potBefore, risk, foldEquity) > 0 &&
+        actionEV(
+          eq,
+          potBefore,
+          sized.heroRisk,
+          foldEquity,
+          sized.callerContribution,
+        ) > 0 &&
         rng() < bluffFrequency
       ) {
-        const { amount, allIn } = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
+        const { amount, allIn } = sized;
         return mk(
           allIn ? 'allin' : 'raise',
           amount,
@@ -953,20 +991,26 @@ function decidePostflop(
 
     if (mayRaise && hasDraw && features.bluffQuality >= 0.35) {
       const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, true);
-      const targetRisk = Math.max(toCall, potBefore * bluffSize);
+      const sized = sizeRaise(
+        ctx,
+        bluffSize,
+        rng,
+        committed,
+        Infinity,
+        0,
+        inPosition ? 2.75 : 3.25,
+      );
       if (
-        actionEV(eq, potBefore, targetRisk, foldEquity) > 0 &&
+        actionEV(
+          eq,
+          potBefore,
+          sized.heroRisk,
+          foldEquity,
+          sized.callerContribution,
+        ) > 0 &&
         rng() < bluffFrequency * 0.72
       ) {
-        const { amount, allIn } = sizeRaise(
-          ctx,
-          bluffSize,
-          rng,
-          committed,
-          Infinity,
-          0,
-          inPosition ? 2.75 : 3.25,
-        );
+        const { amount, allIn } = sized;
         return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'equity-semi-raise'], true);
       }
     }
@@ -979,20 +1023,26 @@ function decidePostflop(
     toCall <= potBefore * 0.7
   ) {
     const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, true);
-    const risk = Math.max(toCall, potBefore * bluffSize);
+    const sized = sizeRaise(
+      ctx,
+      bluffSize,
+      rng,
+      committed,
+      Infinity,
+      0,
+      inPosition ? 2.8 : 3.3,
+    );
     if (
-      actionEV(eq, potBefore, risk, foldEquity) > 0 &&
+      actionEV(
+        eq,
+        potBefore,
+        sized.heroRisk,
+        foldEquity,
+        sized.callerContribution,
+      ) > 0 &&
       rng() < bluffFrequency * 0.35
     ) {
-      const { amount, allIn } = sizeRaise(
-        ctx,
-        bluffSize,
-        rng,
-        committed,
-        Infinity,
-        0,
-        inPosition ? 2.8 : 3.3,
-      );
+      const { amount, allIn } = sized;
       return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'blocker-bluff-raise'], true);
     }
   }
@@ -1045,9 +1095,20 @@ function estimateFoldEquity(
   return clamp(foldEquity, 0.08, 0.72);
 }
 
-/** Approximate immediate EV relative to checking/folding. */
-function actionEV(equity: number, pot: number, risk: number, foldEquity: number): number {
-  const calledEV = equity * (pot + risk) - (1 - equity) * risk;
+/**
+ * Immediate EV relative to checking/folding. A bet has equal hero risk and
+ * caller contribution; a raise does not, because part of the hero's risk first
+ * calls the existing wager.
+ */
+export function actionEV(
+  equity: number,
+  pot: number,
+  heroRisk: number,
+  foldEquity: number,
+  callerContribution = heroRisk,
+): number {
+  const calledEV =
+    equity * (pot + heroRisk + callerContribution) - heroRisk;
   return foldEquity * pot + (1 - foldEquity) * calledEV;
 }
 
@@ -1127,7 +1188,6 @@ function decidePostflopLegacy(
 
   const { toCall, potBefore, canCheck, positionFactor, street } = ctx;
   const opp = ctx.liveOpponents;
-  const wet = boardWetness(ctx.board);
   const cardsToCome = street === 'flop' || street === 'turn';
 
   // Value needs to be stronger multiway; draws are hands with cards to come and

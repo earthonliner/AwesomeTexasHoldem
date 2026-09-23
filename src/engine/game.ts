@@ -190,20 +190,29 @@ export function applyAction(state: GameState, action: PlayerAction): GameState {
   const potBefore = totalPot(next);
   const toCall = next.currentBet - p.streetCommitted;
 
-  // Normalize an all-in that does not exceed the wager into a call. Reject
-  // other illegal actions instead of silently turning them into forced raises.
+  // Normalize an all-in that does not exceed the wager into a call.
   let actionType = action.type;
   if (actionType === 'allin' && p.stack <= toCall) actionType = 'call';
+  // The AI/UI use "raise" as the generic aggressive action; map it to the
+  // engine's street-specific bet/raise vocabulary.
+  if (actionType === 'raise' && legal.canCheck && legal.canBet) actionType = 'bet';
+  if (actionType === 'bet' && !legal.canCheck && legal.canRaise) actionType = 'raise';
+
+  // A stale AI decision or malformed LAN message must not leave the same player
+  // to act forever. Preserve chips and action order by degrading illegal
+  // aggression to the legal passive alternative.
+  const illegalAggression =
+    (actionType === 'bet' && !legal.canBet) ||
+    (actionType === 'raise' && !legal.canRaise) ||
+    (actionType === 'allin' && !(legal.canCheck ? legal.canBet : legal.canRaise));
+  if (illegalAggression) {
+    actionType = legal.canCall ? 'call' : legal.canCheck ? 'check' : 'fold';
+  }
+
   if (actionType === 'check' && !legal.canCheck) return state;
   if (actionType === 'call' && !legal.canCall) {
     if (legal.canCheck) actionType = 'check';
     else return state;
-  }
-  if (actionType === 'bet' && !legal.canBet) return state;
-  if (actionType === 'raise' && !legal.canRaise) return state;
-  if (actionType === 'allin') {
-    const canAllInAggress = legal.canCheck ? legal.canBet : legal.canRaise;
-    if (!canAllInAggress) return state;
   }
 
   const record: ActionRecord = {
@@ -252,6 +261,7 @@ export function applyAction(state: GameState, action: PlayerAction): GameState {
 
       // A raise reopens betting only if it is at least a full minimum raise.
       const isFullRaise = increment >= next.minRaise - 1e-9;
+      record.isFullRaise = isFullRaise;
       if (isFullRaise) {
         next.minRaise = increment;
         for (const other of next.players) {

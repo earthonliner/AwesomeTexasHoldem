@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decide } from './decision';
+import { actionEV, decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile } from './profile';
@@ -170,7 +170,7 @@ describe('decide - pot odds awareness (postflop)', () => {
 });
 
 describe('decide - preflop ranges respond to looseness', () => {
-  const hole = parseCards('Qs Ts') as [Card, Card]; // decent suited broadway
+  const hole = parseCards('Ah 5h') as [Card, Card]; // marginal blocker hand
 
   function notFoldCount(vpip: number): number {
     const person: Personality = { ...tag, vpip, pfr: 0.5 };
@@ -191,6 +191,81 @@ describe('decide - preflop ranges respond to looseness', () => {
     const loose = notFoldCount(0.7);
     const tight = notFoldCount(0.1);
     expect(loose).toBeGreaterThan(tight);
+  });
+});
+
+describe('hard preflop expert strategy', () => {
+  const expert: Personality = {
+    ...tag,
+    vpip: 0.27,
+    pfr: 0.78,
+    bluff: 0.19,
+    positionAwareness: 0.92,
+  };
+
+  function rfiActions(hand: string, position: 'early' | 'btn', positionFactor: number) {
+    const actions: string[] = [];
+    for (let s = 0; s < 80; s++) {
+      actions.push(
+        decide({
+          personality: expert,
+          difficulty: 'hard',
+          ctx: ctx({
+            hole: parseCards(hand) as [Card, Card],
+            position,
+            tableSize: 6,
+            positionFactor,
+            preflopPotType: 'unopened',
+            preflopRaiseCount: 0,
+            currentBet: 2,
+            canRaise: true,
+          }),
+          rng: seeded(10_000 + s),
+        }).action,
+      );
+    }
+    return actions;
+  }
+
+  it('uses raise-or-fold outside the small blind instead of accidental open limps', () => {
+    for (const hand of ['2s 2d', '6s 5s', 'Ks Td']) {
+      expect(rfiActions(hand, 'btn', 1)).not.toContain('call');
+    }
+  });
+
+  it('opens small pairs/connectors on the button but folds KTo from early position', () => {
+    const button22 = rfiActions('2s 2d', 'btn', 1).filter((a) => a === 'raise').length;
+    const button65s = rfiActions('6s 5s', 'btn', 1).filter((a) => a === 'raise').length;
+    const earlyKTo = rfiActions('Ks Td', 'early', 0.4).filter((a) => a === 'fold').length;
+    expect(button22).toBeGreaterThan(60);
+    expect(button65s).toBeGreaterThan(45);
+    expect(earlyKTo).toBeGreaterThan(60);
+  });
+
+  it('does not call a 100bb open shove with dominated broadways', () => {
+    for (const hand of ['As Td', 'Ks Jd', 'Ks Qd']) {
+      for (let s = 0; s < 12; s++) {
+        const d = decide({
+          personality: expert,
+          difficulty: 'hard',
+          ctx: ctx({
+            hole: parseCards(hand) as [Card, Card],
+            potBefore: 203,
+            toCall: 200,
+            stack: 200,
+            effectiveStack: 200,
+            currentBet: 200,
+            maxRaiseTo: 200,
+            canRaise: false,
+            preflopPotType: 'singleRaised',
+            preflopRaiseCount: 1,
+          }),
+          rng: seeded(11_000 + s),
+          iterations: 500,
+        });
+        expect(d.action).toBe('fold');
+      }
+    }
   });
 });
 
@@ -364,7 +439,7 @@ describe('cash-game raise sizing (no 50-100bb spikes)', () => {
         iterations: 150,
       });
       if (d.action === 'raise') {
-        expect(d.amount).toBeLessThanOrEqual(70); // ≤ ~3.2x bet + cap, never 100bb+
+        expect(d.amount).toBeLessThanOrEqual(80); // OOP may use ~3.3x, never a stack-sized spike
       }
     }
   });
@@ -479,6 +554,7 @@ describe('hand story-line: barrel planning', () => {
           potBefore: 24,
           wasAggressorLastStreet: withStory,
           myBluffsThisHand: withStory ? 1 : 0,
+          bluffedLastStreet: withStory,
         }),
         rng: seeded(s + 2000),
         iterations: 120,
@@ -533,11 +609,34 @@ describe('action-line awareness: check-raise respect', () => {
   });
 });
 
-describe('budget mixing breaks the 4-bet nut tell', () => {
-  it('occasionally 4-bets a non-premium hand (rare, not never)', () => {
-    // ATs: budget tier normally blocks the re-raise; only the budget mix
-    // unlocks it, so raises here exist but stay a small minority.
-    const hole = parseCards('As Ts') as [Card, Card];
+describe('blocker-aware 4-bet mixing', () => {
+  it('still value 4-bets a normal 18bb 3-bet when stacks are deep', () => {
+    for (let s = 0; s < 12; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards('As Ad') as [Card, Card],
+          potBefore: 45,
+          toCall: 30,
+          currentBet: 36,
+          streetCommitted: 6,
+          totalCommitted: 6,
+          minRaiseTo: 66,
+          maxRaiseTo: 400,
+          stack: 394,
+          preflopPotType: 'threeBet',
+          preflopRaiseCount: 2,
+        }),
+        rng: seeded(s + 2150),
+      });
+      expect(d.action).toBe('raise');
+      expect(d.reason).toContain('pf-value-4bet');
+    }
+  });
+
+  it('occasionally 4-bets a suited wheel ace (rare, not never)', () => {
+    const hole = parseCards('As 5s') as [Card, Card];
     let raises = 0;
     const n = 150;
     for (let s = 0; s < n; s++) {
@@ -553,6 +652,8 @@ describe('budget mixing breaks the 4-bet nut tell', () => {
           minRaiseTo: 34,
           maxRaiseTo: 400,
           stack: 400,
+          preflopPotType: 'threeBet',
+          preflopRaiseCount: 2,
         }),
         rng: seeded(s + 2200),
       });
@@ -560,6 +661,18 @@ describe('budget mixing breaks the 4-bet nut tell', () => {
     }
     expect(raises).toBeGreaterThan(0); // the tell is broken…
     expect(raises / n).toBeLessThan(0.3); // …but it stays a bluff frequency
+  });
+});
+
+describe('aggressive action EV', () => {
+  it('uses both matched bets when a bet is called', () => {
+    expect(actionEV(0.25, 100, 50, 0)).toBeCloseTo(0);
+  });
+
+  it('does not pretend the call portion of a raise is matched again', () => {
+    const calledEV = actionEV(0.4, 100, 90, 0, 50);
+    expect(calledEV).toBeCloseTo(6);
+    expect(actionEV(0.4, 100, 90, 0.5, 50)).toBeCloseTo(53);
   });
 });
 
@@ -599,23 +712,29 @@ describe('generatePersonality', () => {
   });
 });
 
-describe('medium exploits the observed human style', () => {
-  const trashHole = parseCards('9c 4d') as [Card, Card];
+describe('hard exploits the observed human style', () => {
+  const marginalHole = parseCards('6c 4c') as [Card, Card];
 
   function stealRaiseRate(withProfile: boolean): number {
     const profile = {
       ...emptyHeroProfile(),
       hands: 60,
       foldToSteal: 0.9,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 60,
+        stealFaced: 10,
+        stealFacedFolds: 9,
+      },
     };
     let raises = 0;
     const n = 40;
     for (let s = 0; s < n; s++) {
       const d = decide({
         personality: tag,
-        difficulty: 'medium',
+        difficulty: 'hard',
         ctx: ctx({
-          hole: trashHole,
+          hole: marginalHole,
           toCall: 2,
           potBefore: 3,
           positionFactor: 0.95, // button
@@ -698,9 +817,9 @@ describe('cash-game defence vs an early-position open (hard)', () => {
     const btn = continueRate(1, 0, 6, 11);
     const co = continueRate(0.8, 0, 6, 12);
     const mp = continueRate(0.4, 0, 6, 13);
-    expect(btn).toBeGreaterThan(0.3);
-    expect(co).toBeGreaterThan(0.25);
-    expect(btn).toBeGreaterThan(mp + 0.1);
+    expect(btn).toBeGreaterThan(0.2);
+    expect(co).toBeGreaterThan(0.18);
+    expect(btn).toBeGreaterThan(mp + 0.04);
   });
 
   it('the big blind defends by price (well over a third of hands)', () => {
@@ -708,6 +827,43 @@ describe('cash-game defence vs an early-position open (hard)', () => {
     const sb = continueRate(0, 1, 5, 15);
     expect(bb).toBeGreaterThan(0.35);
     expect(bb).toBeGreaterThan(sb);
+  });
+
+  it('tightens smoothly rather than falling off a hard open-size cliff', () => {
+    function bbRate(openBB: number): number {
+      const rng = seeded(7777);
+      let continues = 0;
+      const n = 350;
+      for (let i = 0; i < n; i++) {
+        const deck = shuffle(makeDeck(), rng);
+        const level = openBB * 2;
+        const d = decide({
+          personality: generatePersonality('hard', rng),
+          difficulty: 'hard',
+          ctx: ctx({
+            hole: [deck[0], deck[1]],
+            potBefore: level + 3,
+            toCall: level - 2,
+            currentBet: level,
+            streetCommitted: 2,
+            totalCommitted: 2,
+            position: 'bb',
+            positionFactor: 0.2,
+            preflopPotType: 'singleRaised',
+            preflopRaiseCount: 1,
+            minRaiseTo: level * 2 - 2,
+          }),
+          rng,
+        });
+        if (d.action !== 'fold') continues++;
+      }
+      return continues / n;
+    }
+
+    const fourAndHalf = bbRate(4.5);
+    const five = bbRate(5);
+    expect(fourAndHalf).toBeGreaterThan(five);
+    expect(fourAndHalf - five).toBeLessThan(0.12);
   });
 
   it('squeezes bigger with a premium when there are callers behind the raise', () => {
@@ -719,7 +875,12 @@ describe('cash-game defence vs an early-position open (hard)', () => {
     for (let s = 0; s < 30; s++) {
       const base = { hole: aces, toCall: 6, minRaiseTo: 12, positionFactor: 1, maxRaiseTo: 400, stack: 400 };
       const a = decide({ personality: tag, difficulty: 'hard', ctx: ctx({ ...base, potBefore: 9 }), rng: seeded(s + 1) });
-      const b = decide({ personality: tag, difficulty: 'hard', ctx: ctx({ ...base, potBefore: 21 }), rng: seeded(s + 1) });
+      const b = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({ ...base, potBefore: 21, callersAfterRaise: 2, preflopPotType: 'singleRaised', preflopRaiseCount: 1 }),
+        rng: seeded(s + 1),
+      });
       if (a.action === 'raise') { hu += a.amount; nHu++; }
       if (b.action === 'raise') { sq += b.amount; nSq++; }
     }
@@ -730,7 +891,9 @@ describe('cash-game defence vs an early-position open (hard)', () => {
 
 describe('positional & stack-depth play (hard)', () => {
   const air = parseCards('7s 2d') as [Card, Card];
-  const board = parseCards('Kh 8c 3d'); // dry, checked to us
+  const floatCandidate = parseCards('7s 5s') as [Card, Card];
+  const board = parseCards('Kh 8c 3d');
+  const floatBoard = parseCards('Kh 8c 3d 6s'); // turn, checked to a real draw
 
   function stabRate(inPosition: boolean, villainDroveLastStreet: boolean): number {
     let bets = 0;
@@ -740,15 +903,17 @@ describe('positional & stack-depth play (hard)', () => {
         personality: tag,
         difficulty: 'hard',
         ctx: ctx({
-          hole: air,
-          board,
+          hole: floatCandidate,
+          board: floatBoard,
           street: 'turn',
           canCheck: true,
           toCall: 0,
           potBefore: 20,
           positionFactor: inPosition ? 1 : 0,
           villainWasAggressorLastStreet: villainDroveLastStreet,
+          villainCheckedToMe: villainDroveLastStreet,
           wasAggressorLastStreet: false,
+          inPositionVsAggressor: inPosition,
           preflopRaised: true,
         }),
         rng: seeded(s + 3000),

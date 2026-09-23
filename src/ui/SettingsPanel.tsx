@@ -11,8 +11,8 @@ interface Props {
 const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: '简单', medium: '中等', hard: '困难' };
 const DIFFICULTY_DESC: Record<Difficulty, string> = {
   easy: '对手性格极端易读、很少诈唬、不看位置。',
-  medium: '对手参数均衡、按局面诈唬、有位置意识。',
-  hard: '混合策略，并读取你的行为画像反过来针对你。',
+  medium: '紧凶/松凶常客，按范围、赔率与位置行动。',
+  hard: '线下强常客：行动线、阻断牌、动作 EV，并读取画像针对你。',
 };
 
 export function SettingsPanel({ settings, onChange, showTableNote }: Props) {

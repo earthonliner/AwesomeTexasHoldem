@@ -63,6 +63,30 @@ describe('legal actions', () => {
     expect(la.canRaise).toBe(true);
     expect(la.minRaiseTo).toBe(4); // BB + min raise (BB)
   });
+
+  it('a short all-in does not reopen raise rights for a prior raiser', () => {
+    const seats: SeatInit[] = [
+      { id: 0, name: 'A', isHero: true, stack: 200 },
+      { id: 1, name: 'B', isHero: false, stack: 7 },
+      { id: 2, name: 'C', isHero: false, stack: 200 },
+    ];
+    let s = startHand({ ...config, seatCount: 3 }, seats, 0, 1, seeded(51));
+    s = applyAction(s, { type: 'raise', amount: 6 });
+    s = applyAction(s, { type: 'allin', amount: 7 }); // only +1, below full raise
+    s = applyAction(s, { type: 'fold', amount: 0 });
+
+    expect(s.toAct).toBe(0);
+    const legal = getLegalActions(s, 0);
+    expect(legal.canCall).toBe(true);
+    expect(legal.callAmount).toBe(1);
+    expect(legal.canRaise).toBe(false);
+    expect(s.history[s.history.length - 2]?.isFullRaise).toBe(false);
+
+    const progressed = applyAction(s, { type: 'raise', amount: 20 });
+    expect(progressed).not.toBe(s);
+    expect(progressed.history[progressed.history.length - 1]?.type).toBe('call');
+    expect(progressed.toAct).not.toBe(0);
+  });
 });
 
 describe('full hand flow', () => {

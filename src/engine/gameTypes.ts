@@ -51,6 +51,11 @@ export interface ActionRecord {
   chipsPutIn?: number;
   /** Increment above the previous wager level (0 for checks/calls). */
   raiseBy?: number;
+  /**
+   * Whether this aggression met the minimum full-raise increment and therefore
+   * reopened betting. Undefined on passive actions and legacy histories.
+   */
+  isFullRaise?: boolean;
 }
 
 export type HandStatus = 'betting' | 'showdown' | 'complete';
