@@ -64,8 +64,6 @@ interface GameStore {
   /** Hero decision snapshots accumulated during the live hand. */
   liveDecisions: DecisionSnapshot[];
   lastResultText: string;
-  /** True when the hero folded during preflop: fast-forward and auto-advance. */
-  heroFoldedPreflop: boolean;
 
   newTable: () => void;
   startNextHand: () => void;
@@ -128,7 +126,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
   handOver: false,
   liveDecisions: [],
   lastResultText: '',
-  heroFoldedPreflop: false,
 
   newTable: () => {
     clearTimers();
@@ -177,8 +174,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
       thinkingId: null,
       liveDecisions: [],
       lastResultText: '',
-      heroFoldedPreflop: false,
-    });
+        });
     aiBluffCounts = {};
     tick(set, get);
   },
@@ -223,12 +219,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
         committed,
       };
       set({ liveDecisions: [...state.liveDecisions, snap] });
-    }
-
-    // Folding preflop means there is nothing to review — flag it so the rest of
-    // the hand resolves quickly and the next hand starts automatically.
-    if (action.type === 'fold' && game.street === 'preflop') {
-      set({ heroFoldedPreflop: true });
     }
 
     playActionSound(action.type, state.settings.sound);
@@ -315,8 +305,12 @@ function scheduleAI(set: SetFn, get: GetFn, idx: number): void {
 
   set({ thinkingId: player.id });
 
-  // If the hero already folded preflop, resolve the rest of the hand snappily.
-  const delay = state.heroFoldedPreflop
+  // Once the hero is out of the hand, the remaining AI-vs-AI action is either
+  // skipped through (default) or played at normal speed so the player can
+  // study how the bots play each other.
+  const heroOut = game.players.some((x) => x.isHero && x.folded);
+  const skipThrough = heroOut && state.settings.afterFoldSpeed === 'fast';
+  const delay = skipThrough
     ? 80
     : state.settings.fastMode
       ? Math.min(350, decision.thinkMs * 0.3)
