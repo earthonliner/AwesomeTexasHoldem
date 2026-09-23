@@ -288,7 +288,7 @@ describe('hard preflop expert strategy', () => {
       rng: seeded(11_500),
     });
     expect(d.action).toBe('raise');
-    expect(d.reason).toContain('pf-value-3bet');
+    expect(d.reason).toContain('pf-jam-isolate');
   });
 
   it('shoves aces instead of flatting a committing 3-bet at 15bb', () => {
@@ -313,7 +313,35 @@ describe('hard preflop expert strategy', () => {
       rng: seeded(11_501),
     });
     expect(d.action).toBe('allin');
-    expect(d.reason).toContain('pf-shallow-4bet-value');
+    expect(d.reason).toContain('pf-jam-isolate');
+  });
+
+  it('does not turn KQs into a 200bb isolation bluff over a 100bb jam', () => {
+    for (let seed = 0; seed < 6; seed++) {
+      const d = decide({
+        personality: expert,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards('Ks Qs') as [Card, Card],
+          liveOpponents: 2,
+          potBefore: 203,
+          toCall: 199,
+          currentBet: 200,
+          streetCommitted: 1,
+          totalCommitted: 1,
+          stack: 399,
+          effectiveStack: 199,
+          canRaise: true,
+          minRaiseTo: 398,
+          maxRaiseTo: 400,
+          preflopPotType: 'singleRaised',
+          preflopRaiseCount: 1,
+        }),
+        rng: seeded(11_600 + seed),
+      });
+      expect(d.action).toBe('fold');
+      expect(d.reason).toContain('pf-jam-fold');
+    }
   });
 });
 

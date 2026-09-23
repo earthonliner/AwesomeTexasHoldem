@@ -433,8 +433,7 @@ function decidePreflop(
   const effectiveDepthBB = (effective + ctx.totalCommitted) / bigBlind;
   reason.push(`eff=${effectiveDepthBB.toFixed(0)}bb`);
   const committedCall =
-    !mayRaise &&
-    (toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo);
+    toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo;
   if (committedCall) {
     let jamRange =
       wagerBB >= 55 ? 0.045 : wagerBB >= 30 ? 0.07 : wagerBB >= 18 ? 0.11 : 0.17;
@@ -456,6 +455,31 @@ function decidePreflop(
       `villR=${jamRange.toFixed(2)}`,
     );
     if (eq + (ctx.aggressorIsHero ? exploit.valueLean * 0.3 : 0) >= odds + 0.012) {
+      const deepJam = wagerBB >= 40;
+      const isolationValue = deepJam
+        ? hand === 'AA' || hand === 'KK'
+        : isPremium(hand);
+      if (mayRaise && isolationValue) {
+        const inPosition =
+          ctx.inPositionVsAggressor ?? ctx.positionFactor >= 0.65;
+        const { amount, allIn } = sizeRaise(
+          ctx,
+          1,
+          rng,
+          isShortStack(ctx),
+          Infinity,
+          callers * 0.65,
+          inPosition ? 2.9 : 3.65,
+        );
+        return mk(
+          allIn ? 'allin' : 'raise',
+          amount,
+          rng,
+          false,
+          [...reason, 'pf-jam-isolate'],
+          true,
+        );
+      }
       return mk('call', 0, rng, false, [...reason, 'pf-jam-call'], true);
     }
     return mk('fold', 0, rng, false, [...reason, 'pf-jam-fold'], true);
