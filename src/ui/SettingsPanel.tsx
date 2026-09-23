@@ -83,6 +83,22 @@ export function SettingsPanel({ settings, onChange, showTableNote }: Props) {
       <Toggle label="启用数学参考面板" checked={settings.mathEnabled} onChange={(v) => onChange({ mathEnabled: v })} />
       <Toggle label="快速模式 (缩短 AI 思考)" checked={settings.fastMode} onChange={(v) => onChange({ fastMode: v })} />
 
+      <Field label="我弃牌后 AI 之间的行动">
+        <div className="flex gap-1">
+          <Choice active={settings.afterFoldSpeed === 'fast'} onClick={() => onChange({ afterFoldSpeed: 'fast' })}>
+            快进
+          </Choice>
+          <Choice active={settings.afterFoldSpeed === 'normal'} onClick={() => onChange({ afterFoldSpeed: 'normal' })}>
+            正常速度
+          </Choice>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">
+          {settings.afterFoldSpeed === 'fast'
+            ? '弃牌后剩余的 AI 对局快速结束，直接进入结算。'
+            : '弃牌后 AI 之间照常思考与下注，方便观察每个对手的行为特点。'}
+        </p>
+      </Field>
+
       <div>
         <Toggle label="对手行为 HUD" checked={settings.hudEnabled} onChange={(v) => onChange({ hudEnabled: v })} />
         <p className="mt-1 text-xs text-amber-500/80">

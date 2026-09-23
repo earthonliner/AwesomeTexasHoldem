@@ -18,6 +18,9 @@ export interface Settings {
   hudEnabled: boolean;
   /** Reduce AI thinking delays for faster sessions. */
   fastMode: boolean;
+  /** After the hero folds: 'fast' skips through the remaining AI-vs-AI action,
+   * 'normal' plays it at regular speed so their tendencies can be observed. */
+  afterFoldSpeed: 'fast' | 'normal';
 }
 
 export interface Stats {
@@ -117,6 +120,7 @@ export const DEFAULT_SETTINGS: Settings = {
   mathEnabled: true,
   hudEnabled: false,
   fastMode: false,
+  afterFoldSpeed: 'fast',
 };
 
 export const DEFAULT_STATS: Stats = {
