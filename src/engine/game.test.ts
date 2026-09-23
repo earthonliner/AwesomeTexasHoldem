@@ -123,6 +123,22 @@ describe('legal actions', () => {
     expect(legal.canCall).toBe(true);
     expect(legal.canRaise).toBe(false);
   });
+
+  it('does not allow a raise when no remaining stack can exceed the wager', () => {
+    const seats: SeatInit[] = [
+      { id: 0, name: 'Deep button', isHero: true, stack: 200 },
+      { id: 1, name: 'Short SB', isHero: false, stack: 50 },
+      { id: 2, name: 'Short BB', isHero: false, stack: 60 },
+      { id: 3, name: 'UTG jammer', isHero: false, stack: 100 },
+    ];
+    let s = startHand(config, seats, 0, 1, seeded(54));
+    s = applyAction(s, { type: 'allin', amount: 100 });
+
+    expect(s.toAct).toBe(0);
+    const legal = getLegalActions(s, 0);
+    expect(legal.canCall).toBe(true);
+    expect(legal.canRaise).toBe(false);
+  });
 });
 
 describe('full hand flow', () => {

@@ -164,7 +164,8 @@ export function getLegalActions(state: GameState, playerIndex: number): LegalAct
       other.id !== p.id &&
       !other.folded &&
       !other.sittingOut &&
-      !other.allIn,
+      !other.allIn &&
+      other.streetCommitted + other.stack > state.currentBet,
   );
   const canAggress = p.stack > toCall && opponentCanRespond;
   // A short all-in raise makes prior callers/raisers owe the difference, but it
