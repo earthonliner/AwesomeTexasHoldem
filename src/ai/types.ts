@@ -89,6 +89,8 @@ export interface DecisionContext {
   villainCheckedToMe?: boolean;
   /** This AI checked earlier on the current street. */
   checkedThisStreet?: boolean;
+  /** Every recorded action on the previous post-flop street was a check. */
+  previousStreetCheckedThrough?: boolean;
   /** Position relative to the current/previous aggressor after the flop. */
   inPositionVsAggressor?: boolean;
   /** false when the pot was limped pre-flop (weak, capped opponent ranges). */

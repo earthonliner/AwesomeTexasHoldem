@@ -124,4 +124,60 @@ describe('integration: full AI-driven sessions', () => {
     const game = playHand(config, seats, personalities, 0, 'hard', rng, profile);
     expect(game.status).toBe('complete');
   });
+
+  it('does not check down most multiway hard-mode flops across all three streets', () => {
+    const rng = seeded(7401);
+    const seatCount = 6;
+    const config: GameConfig = {
+      seatCount,
+      blindLevel: 1,
+      startingStackBB: 100,
+      difficulty: 'hard',
+    };
+    const personalities = Array.from({ length: seatCount }, (_, i) =>
+      generatePersonality('hard', seeded(100 + i)),
+    );
+    let multiwayFlops = 0;
+    let threeStreetCheckdowns = 0;
+    const hands = 180;
+
+    for (let hand = 0; hand < hands; hand++) {
+      const seats: SeatInit[] = Array.from({ length: seatCount }, (_, i) => ({
+        id: i,
+        name: `P${i}`,
+        isHero: i === 0,
+        stack: 100 * BB_CHIPS,
+      }));
+      const game = playHand(
+        config,
+        seats,
+        personalities,
+        hand % seatCount,
+        'hard',
+        rng,
+      );
+      const flopActors = new Set(
+        game.history
+          .filter((action) => action.street === 'flop')
+          .map((action) => action.playerId),
+      );
+      if (flopActors.size < 3) continue;
+      multiwayFlops++;
+
+      const checkedThrough = (street: 'flop' | 'turn' | 'river') => {
+        const actions = game.history.filter((action) => action.street === street);
+        return actions.length >= 2 && actions.every((action) => action.type === 'check');
+      };
+      if (
+        checkedThrough('flop') &&
+        checkedThrough('turn') &&
+        checkedThrough('river')
+      ) {
+        threeStreetCheckdowns++;
+      }
+    }
+
+    expect(multiwayFlops).toBeGreaterThan(20);
+    expect(threeStreetCheckdowns / multiwayFlops).toBeLessThan(0.35);
+  });
 });

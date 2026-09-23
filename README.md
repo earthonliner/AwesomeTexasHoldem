@@ -581,15 +581,59 @@ potCap      = currentLevel + potAfterCall × max(fraction,0.5) × U(0.9,1.1)
 | 场景 | 必要条件与当前参数 |
 | --- | --- |
 | 强价值主动下注 | `equity≥valueThreshold`；flop/turn 还须至少一对，river 可仅凭 equity；若不 trap 则下注 |
+| 顶对/超对保护下注 | flop/turn 且 `equity≥max(0.40,valueThreshold-0.16)`；混合概率见下式 |
 | Trap | 真人激进画像可 `+0.20`；`boardWetness<0.48`、两对+、OOP 且上一街对手主导再 `+0.12` |
 | 面对下注 trap-call | `trapMore` 已启用、`equity≥valueThreshold+0.08`、尚未 commit 时，以 **42%** 混合只跟不加 |
-| Float / probe | 上一街对手是攻击者、**本街已真实 check 到 AI**、AI 上街不是攻击者、对手数≤2、`actionEV>0` |
+| Flop range c-bet | AI 是翻前最后攻击者、候选合格、`actionEV>0`；按牌面/人数/位置混合，硬上限 **58%** |
+| Float / checked-to stab | 上一街对手是攻击者、**本街已真实 check 到 AI**、AI 上街不是攻击者、对手数≤2、`actionEV>0` |
 | Float 概率 | `clamp((0.28 + (IP?0.20:0) + aggression×0.12) × foldPressure × (0.45+bluffQuality), 0, 0.72)` |
+| Checked-through probe | flop 或 turn 全桌过牌后，下一街按位置、人数和候选质量主动 probe；`actionEV>0`，硬上限 **62%** |
 | 延续 barrel | AI 上一街确实以 bluff 身份进攻，且当前不面对 check-raise、`actionEV>0` |
 | Barrel 概率 | `(river?0.34:0.52) + J/Q/K/A runout 0.08 + bluffQuality×0.18`，再乘 `bluffMult`，上限 **0.72** |
 | 面对下注的 value raise | `equity ≥ valueThreshold+0.08`、至少一对，混合概率 `0.48 + aggression×0.32` |
 | 继续区 semi-raise | 真实听牌且 `bluffQuality≥0.35`、EV>0，混合 `bluffFrequency×0.72` |
 | 弃牌区 bluff-raise | river `bluffQuality≥0.35`，其他街 `≥0.45`；`toCall≤0.7pot`、EV>0，混合 `bluffFrequency×0.35` |
+
+保护下注概率：
+
+```text
+clamp(
+  0.36 + aggression×0.34 + boardWetness×0.10
+  - (opponents-1)×0.07 + (IP ? 0.05 : 0),
+  0.25,
+  0.78
+)
+```
+
+Flop range c-bet 只从真实听牌、`bluffQuality≥0.08` 或 `showdownValue≤0.30` 的组合中选择；顶对/超对先走上述保护下注混合。其频率为：
+
+```text
+cbetBase
+  = 0.28 + aggression×0.22 + (IP ? 0.08 : 0)
+  + (3-bet/4-bet+ pot ? 0.08 : 0)
+  - (opponents-1)×0.08 - boardWetness×0.08
+
+cbetQuality
+  = clamp(0.52 + bluffQuality×0.50 + (有overcard ? 0.05 : 0), 0.45, 1)
+
+P(c-bet) = clamp(cbetBase × cbetQuality × foldPressure, 0.04, 0.58)
+```
+
+Turn/River 若上一街至少两人行动且全部 check，则标记为 `previousStreetCheckedThrough`。Turn 可用听牌、高牌、底/中对和公共牌对子 probe；river 仅用高牌候选。当前混合为：
+
+```text
+probeBase
+  = 0.20 + aggression×0.22 + positionFactor×0.18
+  - (opponents-1)×0.065 - (river ? 0.03 : 0)
+
+probeQuality
+  = 一对时 0.75
+  : clamp(0.66 + bluffQuality×0.42 - showdownValue×0.18, 0.55, 1)
+
+P(probe) = clamp(probeBase × probeQuality × foldPressure, 0.06, 0.62)
+```
+
+全桌过牌会使范围封顶，因此 probe 的弃牌率估计再增加 `0.08 + positionFactor×0.04`，最终仍截断到 `[0.08,0.78]`。Range c-bet、保护下注和 checked-through probe 都使用非极化尺度桶，并继续服从动作 EV；这提高真实主动进攻率，但不会让多人池变成无条件轮流诈唬。
 
 若上一街 bluff barrel 变成负 EV，AI 会明确进入 give-up check，而不是为了“讲故事”继续烧钱。
 

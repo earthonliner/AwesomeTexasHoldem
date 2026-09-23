@@ -881,6 +881,11 @@ function decidePostflop(
   const strongValue =
     eq >= valueThreshold &&
     (features.category >= HandCategory.Pair || street === 'river');
+  const protectionValue =
+    street !== 'river' &&
+    features.category === HandCategory.Pair &&
+    (features.pairKind === 'over' || features.pairKind === 'top') &&
+    eq >= Math.max(0.4, valueThreshold - 0.16);
 
   let bluffFrequency = dynamicBluffFrequency(p, ctx) * exploit.bluffMult;
   const candidateMultiplier =
@@ -905,7 +910,20 @@ function decidePostflop(
   const thinSize = pickBetSize(p, ctx, features, false, rng);
 
   if (canCheck) {
-    if (strongValue) {
+    const protectionBet =
+      !strongValue &&
+      protectionValue &&
+      rng() <
+        clamp(
+          0.36 +
+            p.aggression * 0.34 +
+            wet * 0.1 -
+            Math.max(0, opponents - 1) * 0.07 +
+            (inPosition ? 0.05 : 0),
+          0.25,
+          0.78,
+        );
+    if (strongValue || protectionBet) {
       const dryEnoughToTrap = wet < 0.48 && features.category >= HandCategory.TwoPair;
       const trapChance =
         (exploit.trapMore ? 0.2 : 0) +
@@ -921,9 +939,78 @@ function decidePostflop(
           0,
           inPosition ? 2.7 : 3.15,
         );
-        return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, nutRange ? 'polar-value' : 'thin-value']);
+        return mk(
+          allIn ? 'allin' : 'raise',
+          amount,
+          rng,
+          false,
+          [
+            ...reason,
+            protectionBet ? 'protection-value' : nutRange ? 'polar-value' : 'thin-value',
+          ],
+        );
       }
       return mk('check', 0, rng, false, [...reason, 'value-trap']);
+    }
+
+    // The pre-flop aggressor retains a range advantage on many flops. C-bet a
+    // board-aware subset rather than requiring a made value hand or rolling the
+    // generic bluff frequency, which otherwise makes multiway pots check down.
+    const initiativeCbet =
+      street === 'flop' &&
+      !!ctx.wasAggressorLastStreet &&
+      !ctx.facingCheckRaise;
+    const rangeCbetCandidate =
+      hasDraw ||
+      features.bluffQuality >= 0.08 ||
+      features.showdownValue <= 0.3;
+    if (initiativeCbet && !protectionValue && rangeCbetCandidate && mayRaise) {
+      const bloatedPotBoost =
+        ctx.preflopPotType === 'threeBet' || ctx.preflopPotType === 'fourBetPlus'
+          ? 0.08
+          : 0;
+      const cbetBase =
+        0.28 +
+        p.aggression * 0.22 +
+        (inPosition ? 0.08 : 0) +
+        bloatedPotBoost -
+        Math.max(0, opponents - 1) * 0.08 -
+        wet * 0.08;
+      const cbetQuality = clamp(
+        0.52 +
+          features.bluffQuality * 0.5 +
+          (features.overcards > 0 ? 0.05 : 0),
+        0.45,
+        1,
+      );
+      const cbetChance = clamp(
+        cbetBase * cbetQuality * exploit.foldPressure,
+        0.04,
+        0.58,
+      );
+      const foldEquity = estimateFoldEquity(ctx, exploit, thinSize, features, false);
+      const sized = sizeRaise(ctx, thinSize, rng, committed, Infinity);
+      if (
+        actionEV(
+          eq,
+          potBefore,
+          sized.heroRisk,
+          foldEquity,
+          sized.callerContribution,
+        ) > 0 &&
+        rng() < cbetChance
+      ) {
+        const { amount, allIn } = sized;
+        const isRangeBluff =
+          features.category === HandCategory.HighCard || features.pairKind === 'under';
+        return mk(
+          allIn ? 'allin' : 'raise',
+          amount,
+          rng,
+          isRangeBluff,
+          [...reason, 'range-cbet'],
+        );
+      }
     }
 
     // A float/probe requires evidence that the prior aggressor has actually
@@ -953,6 +1040,75 @@ function decidePostflop(
       if (profitable && rng() < stabChance) {
         const { amount, allIn } = sized;
         return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'checked-to-float']);
+      }
+    }
+
+    // After an entire post-flop street checks through, every range is more
+    // capped. Strong live players probe a controlled mix on the next street,
+    // especially late in position, instead of independently re-rolling a tiny
+    // generic bluff probability and checking all the way to showdown.
+    const checkedThroughProbe =
+      (street === 'turn' || street === 'river') &&
+      !!ctx.previousStreetCheckedThrough;
+    const probeCandidate =
+      street === 'river'
+        ? features.category === HandCategory.HighCard
+        : hasDraw ||
+          features.category === HandCategory.HighCard ||
+          (features.category === HandCategory.Pair &&
+            features.pairKind !== 'top' &&
+            features.pairKind !== 'over') ||
+          features.bluffQuality >= 0.1;
+    if (checkedThroughProbe && !protectionValue && probeCandidate && mayRaise) {
+      const probeBase =
+        0.2 +
+        p.aggression * 0.22 +
+        ctx.positionFactor * 0.18 -
+        Math.max(0, opponents - 1) * 0.065 -
+        (street === 'river' ? 0.03 : 0);
+      const probeQuality =
+        features.category === HandCategory.Pair
+          ? 0.75
+          : clamp(
+              0.66 +
+                features.bluffQuality * 0.42 -
+                features.showdownValue * 0.18,
+              0.55,
+              1,
+            );
+      const probeChance = clamp(
+        probeBase * probeQuality * exploit.foldPressure,
+        0.06,
+        0.62,
+      );
+      const foldEquity = clamp(
+        estimateFoldEquity(ctx, exploit, thinSize, features, false) +
+          0.08 +
+          ctx.positionFactor * 0.04,
+        0.08,
+        0.78,
+      );
+      const sized = sizeRaise(ctx, thinSize, rng, committed, Infinity);
+      if (
+        actionEV(
+          eq,
+          potBefore,
+          sized.heroRisk,
+          foldEquity,
+          sized.callerContribution,
+        ) > 0 &&
+        rng() < probeChance
+      ) {
+        const { amount, allIn } = sized;
+        const isProbeBluff =
+          features.category === HandCategory.HighCard || features.pairKind === 'under';
+        return mk(
+          allIn ? 'allin' : 'raise',
+          amount,
+          rng,
+          isProbeBluff,
+          [...reason, isProbeBluff ? 'delayed-probe' : 'delayed-protection'],
+        );
       }
     }
 

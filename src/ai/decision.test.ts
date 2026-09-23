@@ -899,6 +899,109 @@ describe('medium AI bluffs in a controlled, hard-to-read way', () => {
   });
 });
 
+describe('multiway post-flop initiative (hard)', () => {
+  const air = parseCards('7s 2d') as [Card, Card];
+  const dryFlop = parseCards('Kh 8c 3d');
+
+  function betRate(partial: Partial<DecisionContext>, seedBase: number): number {
+    let bets = 0;
+    const n = 80;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: air,
+          board: dryFlop,
+          street: 'flop',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 24,
+          liveOpponents: 2,
+          positionFactor: 0.7,
+          preflopPotType: 'singleRaised',
+          ...partial,
+        }),
+        rng: seeded(seedBase + s),
+        iterations: 120,
+      });
+      if (d.action === 'raise' || d.action === 'allin') bets++;
+    }
+    return bets / n;
+  }
+
+  it('uses a controlled multiway c-bet range when it has pre-flop initiative', () => {
+    const withInitiative = betRate({ wasAggressorLastStreet: true }, 7200);
+    const withoutInitiative = betRate({ wasAggressorLastStreet: false }, 7200);
+    expect(withInitiative).toBeGreaterThan(withoutInitiative + 0.1);
+    expect(withInitiative).toBeLessThan(0.6);
+  });
+
+  it('probes more often after a full street checks through', () => {
+    const board = parseCards('Kh 8c 3d 6s');
+    const rate = (checkedThrough: boolean): number => {
+      let bets = 0;
+      const n = 80;
+      for (let s = 0; s < n; s++) {
+        const d = decide({
+          personality: tag,
+          difficulty: 'hard',
+          ctx: ctx({
+            hole: air,
+            board,
+            street: 'turn',
+            canCheck: true,
+            toCall: 0,
+            potBefore: 24,
+            liveOpponents: 2,
+            positionFactor: 0.8,
+            previousStreetCheckedThrough: checkedThrough,
+            preflopPotType: 'singleRaised',
+          }),
+          rng: seeded(7300 + s),
+          iterations: 120,
+        });
+        if (d.action === 'raise' || d.action === 'allin') bets++;
+      }
+      return bets / n;
+    };
+
+    const probe = rate(true);
+    const noStory = rate(false);
+    expect(probe).toBeGreaterThan(noStory + 0.12);
+    expect(probe).toBeLessThan(0.65);
+  });
+
+  it('mixes top-pair protection bets instead of always checking below the equity threshold', () => {
+    const hole = parseCards('Ah 9d') as [Card, Card];
+    const board = parseCards('As 8c 3d');
+    let protectionBets = 0;
+    const n = 80;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 24,
+          liveOpponents: 2,
+          positionFactor: 0.7,
+          preflopPotType: 'singleRaised',
+        }),
+        rng: seeded(7400 + s),
+        iterations: 140,
+      });
+      if (d.reason.endsWith('protection-value')) protectionBets++;
+    }
+    expect(protectionBets).toBeGreaterThan(10);
+    expect(protectionBets).toBeLessThan(70);
+  });
+});
+
 describe('cash-game defence vs an early-position open (hard)', () => {
   // Random hands, random hard personalities: measure how often each seat
   // continues (call or 3-bet) against a 3bb open in a 6-max game.
