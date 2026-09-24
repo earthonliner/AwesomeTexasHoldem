@@ -169,6 +169,72 @@ describe('decide - pot odds awareness (postflop)', () => {
   });
 });
 
+describe('EV-gated action selection (hard)', () => {
+  it('never pays off a clearly negative-EV river bet with a hopeless hand', () => {
+    // Bottom of the range facing a pot-sized river bet: calling loses ~one bet
+    // per call. Randomisation belongs to near-indifferent spots only.
+    const hole = parseCards('7c 2d') as [Card, Card];
+    const board = parseCards('Ah Kd Qs Jc 9h');
+    let calls = 0;
+    for (let s = 0; s < 40; s++) {
+      const d = decide({
+        personality: { ...tag, callDown: 0.9 },
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'river',
+          canCheck: false,
+          toCall: 40,
+          potBefore: 80,
+          positionFactor: 1,
+          streetAggressionCount: 1,
+          betToPot: 1,
+        }),
+        rng: seeded(9100 + s),
+        iterations: 200,
+      });
+      if (d.action !== 'fold') calls++;
+    }
+    expect(calls).toBe(0);
+  });
+
+  it('fires a flop c-bet at one final frequency rather than a compounded one', () => {
+    // Pre-flop raiser in position, checked to by one caller, pure air on a dry
+    // board: the c-bet plan is the only roll, so the observed frequency must sit
+    // inside the plan's own band (never the 1 - Π(1 - p_i) of stacked rolls).
+    const hole = parseCards('7c 5d') as [Card, Card];
+    const board = parseCards('Kh 8s 2d');
+    let bets = 0;
+    const n = 120;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 14,
+          positionFactor: 1,
+          wasAggressorLastStreet: true,
+          inPositionVsAggressor: true,
+          preflopRaised: true,
+          preflopPotType: 'singleRaised',
+        }),
+        rng: seeded(9300 + s),
+        iterations: 120,
+      });
+      if (d.action === 'raise') bets++;
+    }
+    const rate = bets / n;
+    expect(rate).toBeGreaterThan(0.2);
+    expect(rate).toBeLessThan(0.62);
+  });
+});
+
 describe('decide - preflop ranges respond to looseness', () => {
   const hole = parseCards('Ah 5h') as [Card, Card]; // marginal blocker hand
 
