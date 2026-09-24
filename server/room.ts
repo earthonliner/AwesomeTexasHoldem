@@ -11,6 +11,7 @@ import type { PlayerAction, Street } from '../src/engine/types';
 import { generatePersonality } from '../src/ai/personality';
 import { decide } from '../src/ai/decision';
 import { buildDecisionContext, resolveProfiledOpponentId } from '../src/ai/context';
+import { effectiveImage, sampleHandImage, updateTableImage, type TableImage } from '../src/ai/image';
 import { emptyHeroProfile, summarizePlayerHand, updateHeroProfile } from '../src/ai/profile';
 import type { HeroProfile, Personality } from '../src/ai/types';
 import { redactGameStateFor } from '../src/online/redact';
@@ -72,7 +73,7 @@ export class Room {
   /** Per-hand bluff counts and rolling aggression image per AI seat. */
   private aiBluffCounts: Record<number, number> = {};
   private aiLastBluffStreet: Record<number, Street> = {};
-  private aiImages: Record<number, number> = {};
+  private aiImages: Record<number, TableImage> = {};
   private humanProfiles: Record<number, HeroProfile> = {};
 
   private actionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -392,7 +393,7 @@ export class Room {
       this.seats.filter((candidate) => candidate.kind === 'human').map((candidate) => candidate.seatId),
     );
     const ctx = buildDecisionContext(game, idx, {
-      recentImage: this.aiImages[seat.seatId] ?? 0.3,
+      recentImage: effectiveImage(this.aiImages[seat.seatId]),
       bluffCount: this.aiBluffCounts[seat.seatId] ?? 0,
       lastBluffStreet: this.aiLastBluffStreet[seat.seatId],
       profiledPlayerIds: humanIds,
@@ -471,18 +472,10 @@ export class Room {
       );
     }
 
-    // Update each AI's rolling aggression image for the dynamic-bluff model.
+    // Update each AI's table image for the dynamic-bluff model.
     for (const p of game.players) {
       if (this.seats[p.id]?.kind !== 'ai' || p.sittingOut) continue;
-      let agg = 0;
-      let pas = 0;
-      for (const a of game.history) {
-        if (a.playerId !== p.id) continue;
-        if (a.type === 'bet' || a.type === 'raise' || a.type === 'allin') agg++;
-        if (a.type === 'call' || a.type === 'check') pas++;
-      }
-      const handRatio = agg + pas > 0 ? agg / (agg + pas) : 0.3;
-      this.aiImages[p.id] = 0.65 * (this.aiImages[p.id] ?? 0.3) + 0.35 * handRatio;
+      this.aiImages[p.id] = updateTableImage(this.aiImages[p.id], sampleHandImage(game, p.id));
     }
 
     // The next hand starts only once every active human clicks "下一手". If no

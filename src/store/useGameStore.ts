@@ -5,6 +5,7 @@ import { startHand as engineStartHand, applyAction, totalPot, type SeatInit } fr
 import { generatePersonality, describePersonality } from '../ai/personality';
 import { decide } from '../ai/decision';
 import { buildDecisionContext } from '../ai/context';
+import { effectiveImage, sampleHandImage, updateTableImage, type TableImage } from '../ai/image';
 import { updateHeroProfile, emptyHeroProfile, summarizePlayerHand } from '../ai/profile';
 import type { HeroProfile } from '../ai/types';
 import { computeHeroAnalysis, computeFoldOutcome, type HeroAnalysis } from '../utils/analysis';
@@ -33,7 +34,7 @@ let nextHandTimer: ReturnType<typeof setTimeout> | null = null;
 // hand story-line (barrel plans) and the dynamic-bluff image adjustment.
 let aiBluffCounts: Record<number, number> = {};
 let aiLastBluffStreet: Record<number, GameState['street']> = {};
-const aiImages: Record<number, number> = {};
+const aiImages: Record<number, TableImage> = {};
 
 function clearTimers(): void {
   if (aiTimer) clearTimeout(aiTimer);
@@ -310,7 +311,7 @@ function scheduleAI(set: SetFn, get: GetFn, idx: number): void {
   if (!seat.personality) return;
 
   const ctx = buildDecisionContext(game, idx, {
-    recentImage: aiImages[player.id] ?? 0.3,
+    recentImage: effectiveImage(aiImages[player.id]),
     bluffCount: aiBluffCounts[player.id] ?? 0,
     lastBluffStreet: aiLastBluffStreet[player.id],
   });
@@ -412,19 +413,11 @@ function finalize(set: SetFn, get: GetFn): void {
   const heroProfile = updateHeroProfile(state.heroProfile, summarizePlayerHand(game, hero.id));
   const opponentStats = updateOpponentStats(state.opponentStats, game, hero.id);
 
-  // Update each AI's rolling aggression image (feeds dynamic bluff frequency:
-  // an AI that just showed a lot of aggression tones its bluffs down).
+  // Update each AI's table image (feeds dynamic bluff frequency and thin
+  // value: an AI that has shown a lot of aggression tones its bluffs down).
   for (const p of game.players) {
     if (p.isHero || p.sittingOut) continue;
-    let agg = 0;
-    let pas = 0;
-    for (const a of game.history) {
-      if (a.playerId !== p.id) continue;
-      if (a.type === 'bet' || a.type === 'raise' || a.type === 'allin') agg++;
-      if (a.type === 'call' || a.type === 'check') pas++;
-    }
-    const handRatio = agg + pas > 0 ? agg / (agg + pas) : 0.3;
-    aiImages[p.id] = 0.65 * (aiImages[p.id] ?? 0.3) + 0.35 * handRatio;
+    aiImages[p.id] = updateTableImage(aiImages[p.id], sampleHandImage(game, p.id));
   }
 
   const revealed = game.revealed.map((id) => {

@@ -4,3 +4,4 @@ export * from './decision';
 export * from './dynamicBluff';
 export * from './boardTexture';
 export * from './profile';
+export * from './image';
