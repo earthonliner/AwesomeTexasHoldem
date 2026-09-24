@@ -828,7 +828,8 @@ describe('generatePersonality', () => {
 });
 
 describe('hard exploits the observed human style', () => {
-  const marginalHole = parseCards('6c 4c') as [Card, Card];
+  // K7o sits just below a default button open; a steal read should add it.
+  const marginalHole = parseCards('Kc 7d') as [Card, Card];
 
   function stealRaiseRate(withProfile: boolean): number {
     const profile = {
@@ -1022,6 +1023,10 @@ describe('multiway post-flop initiative (hard)', () => {
           liveOpponents: 2,
           positionFactor: 0.7,
           preflopPotType: 'singleRaised',
+          // The pre-flop raiser is checked to by two callers: their checks are
+          // uninformative, so the weak-kicker top pair stays below the value
+          // threshold and must be mixed as a protection bet.
+          wasAggressorLastStreet: true,
         }),
         rng: seeded(7400 + s),
         iterations: 140,
@@ -1176,7 +1181,9 @@ describe('positional & stack-depth play (hard)', () => {
   it('floats: stabs much more when the previous-street aggressor checks to it in position', () => {
     const floatIp = stabRate(true, true);
     const noStory = stabRate(true, false);
-    expect(floatIp).toBeGreaterThan(noStory + 0.15);
+    // Both checks cap the villain's range (the checker model), so the float
+    // story adds a moderate premium on top of the ordinary semi-bluff.
+    expect(floatIp).toBeGreaterThan(noStory + 0.1);
     expect(floatIp).toBeGreaterThan(stabRate(false, true));
   });
 

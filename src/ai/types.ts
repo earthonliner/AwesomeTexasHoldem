@@ -65,6 +65,12 @@ export interface DecisionContext {
   tableSize?: number;
   position?: TablePosition;
   playersBehind?: number;
+  /**
+   * Live opponents whose chips are already committed at the current level:
+   * all-in players plus everyone who has matched the current bet. They all
+   * contest the pot regardless of what the players still to act do.
+   */
+  committedOpponents?: number;
 
   // ---- Hand story-line (optional; derived from the action history) ----
   /** This player made the last aggressive action on the previous street. */

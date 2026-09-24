@@ -87,6 +87,9 @@ export function buildDecisionContext(
     playersBehind: liveOpponentIndices.filter(
       ({ p }) => !actedThisStreet.has(p.id) && !p.allIn,
     ).length,
+    committedOpponents: liveOpponentIndices.filter(
+      ({ p }) => p.allIn || (game.currentBet > 0 && p.streetCommitted >= game.currentBet),
+    ).length,
     street: game.street as DecisionContext['street'],
     canCheck: legal.canCheck,
     canRaise: legal.canBet || legal.canRaise,
