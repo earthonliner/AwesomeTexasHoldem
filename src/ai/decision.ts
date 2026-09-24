@@ -20,7 +20,10 @@ import {
   startingHandClass,
 } from './preflop';
 import {
+  LATE_SHORT_JAM_WIDTH,
   OPEN_JAM_DEPTH_BB,
+  SHORT_JAM_MAX_BB,
+  openJamWidth,
   SPECULATIVE_CUTOFF_DEPTH_BB,
   fiveBetProbability,
   jamContinueFraction,
@@ -427,7 +430,12 @@ function decidePreflop(
     if (effectiveDepthBB <= OPEN_JAM_DEPTH_BB && mayRaise) {
       const jamStrength =
         preflopAllInPercentile(ctx.hole[0], ctx.hole[1]) + (rng() - 0.5) * 0.025;
-      if (jamStrength >= 1 - openRange * 0.85) {
+      const jamRange = Math.min(
+        0.85,
+        openRange * openJamWidth(ctx.playersBehind ?? ctx.liveOpponents),
+      );
+      reason.push(`jam=${jamRange.toFixed(2)}`);
+      if (jamStrength >= 1 - jamRange) {
         return mk('allin', ctx.maxRaiseTo, rng, false, [...reason, 'pf-open-jam'], true);
       }
       return mk('fold', 0, rng, false, [...reason, 'pf-open-jam-fold']);
@@ -490,6 +498,17 @@ function decidePreflop(
     toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo;
   if (committedCall) {
     let jamRange = shoveRangeFraction(wagerBB);
+    // A short open-jam with only the blinds behind (cutoff, button or the small
+    // blind) comes from a far wider range than the same wager from up front.
+    const lateShortJam =
+      wagerBB <= SHORT_JAM_MAX_BB &&
+      raises <= 1 &&
+      (ctx.aggressorPosition
+        ? ctx.aggressorPosition === 'co' ||
+          ctx.aggressorPosition === 'btn' ||
+          ctx.aggressorPosition === 'sb'
+        : (ctx.aggressorPositionFactor ?? 0.5) >= 0.72);
+    if (lateShortJam) jamRange *= LATE_SHORT_JAM_WIDTH;
     if (potType === 'fourBetPlus') jamRange *= 0.72;
     if (ctx.aggressorIsHero) jamRange *= exploit.rangeMult;
     jamRange = clamp(jamRange, 0.025, 0.3);

@@ -106,6 +106,7 @@ export function buildDecisionContext(
         : undefined,
     inPositionVsAggressor:
       aggressorIdx >= 0 ? positionFactor > aggressorPosition : positionFactor >= 0.6,
+    aggressorPosition: aggressorIdx >= 0 ? tablePositionFor(game, aggressorIdx) : undefined,
     myBluffsThisHand: meta.bluffCount ?? 0,
     bluffedLastStreet:
       meta.lastBluffStreet !== undefined &&

@@ -25,7 +25,8 @@ function interpolate(points: readonly (readonly [number, number])[], x: number):
 export function shoveRangeFraction(wagerBB: number): number {
   return interpolate(
     [
-      [10, 0.19],
+      [6, 0.34],
+      [10, 0.24],
       [18, 0.14],
       [30, 0.09],
       [55, 0.05],
@@ -34,6 +35,10 @@ export function shoveRangeFraction(wagerBB: number): number {
     wagerBB,
   );
 }
+
+/** Short jams from late position (only the blinds behind) are much wider. */
+export const LATE_SHORT_JAM_WIDTH = 1.45;
+export const SHORT_JAM_MAX_BB = 15;
 
 /**
  * Multiplier on the positional opening range when stacks are shallow. Small
@@ -46,6 +51,16 @@ export function shortStackOpenMultiplier(effectiveDepthBB: number): number {
 
 /** Effective depth at or below which raise-first-in is replaced by open-jam. */
 export const OPEN_JAM_DEPTH_BB = 12;
+
+/**
+ * How much wider than the raise-first-in range an open-jam is, by the number
+ * of players still to act. With only the blinds behind, a short stack jams far
+ * more than it would open deep (fold equity plus blind pressure); from early
+ * position the jam range is about the opening range.
+ */
+export function openJamWidth(playersBehind: number): number {
+  return clamp(2.1 - 0.25 * Math.max(0, playersBehind), 1, 1.9);
+}
 
 /** Speculative hands folded first-in below this depth (no implied odds). */
 export const SPECULATIVE_CUTOFF_DEPTH_BB = 22;

@@ -82,10 +82,13 @@ export function preflopAllInScore(a: Card, b: Card): number {
   const lo = Math.min(a.rank, b.rank);
   if (hi === lo) return 52 + hi * 2.9;
   const gap = hi - lo;
+  // An ace is worth more than its rank alone against the pairs-and-broadways
+  // ranges that call jams: Ax is rarely dominated the way Q9o or J8o is.
   return (
     30 +
     hi * 1.9 +
     lo * 1.0 +
+    (hi === 14 ? 3 : 0) +
     (gap === 1 ? 1 : gap === 2 ? 0.5 : 0) +
     (a.suit === b.suit ? 2.5 : 0)
   );

@@ -4,6 +4,7 @@ import type { Card } from '../engine/types';
 import {
   fiveBetProbability,
   jamContinueFraction,
+  openJamWidth,
   shortStackOpenMultiplier,
   shoveRangeFraction,
   valueFourBetProbability,
@@ -25,12 +26,19 @@ describe('shove range by wager size', () => {
       expect(next).toBeLessThanOrEqual(prev + 1e-9);
       prev = next;
     }
-    expect(shoveRangeFraction(3)).toBe(shoveRangeFraction(10));
+    expect(shoveRangeFraction(3)).toBe(shoveRangeFraction(6));
     expect(shoveRangeFraction(200)).toBe(shoveRangeFraction(90));
   });
 });
 
 describe('short-stack opening', () => {
+  it('open-jams far wider with only the blinds behind than from early position', () => {
+    expect(openJamWidth(1)).toBeGreaterThan(1.8);
+    expect(openJamWidth(2)).toBeGreaterThan(openJamWidth(3));
+    expect(openJamWidth(5)).toBe(1);
+    expect(openJamWidth(8)).toBe(1);
+  });
+
   it('tightens raise-first-in gradually below ~25BB and is neutral at 100BB', () => {
     expect(shortStackOpenMultiplier(100)).toBe(1);
     expect(shortStackOpenMultiplier(25)).toBeLessThan(1);

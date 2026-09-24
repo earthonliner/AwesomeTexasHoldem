@@ -106,6 +106,8 @@ export interface DecisionContext {
   limpers?: number;
   callersAfterRaise?: number;
   aggressorPositionFactor?: number;
+  /** Table position of the relevant aggressor (stable, unlike the live factor). */
+  aggressorPosition?: TablePosition;
 }
 
 export interface AIDecision {

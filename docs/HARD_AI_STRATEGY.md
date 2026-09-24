@@ -79,7 +79,7 @@
 | 排序 | 来源 | 用途 |
 | --- | --- | --- |
 | **可玩性排序** `preflopScore` | 显式 169 类起手牌表 `PLAYABILITY_ORDER`（前 20：AA KK QQ JJ AKs AKo TT AQs AJs KQs 99 AQo ATs KJs QJs 88 KTs AJo JTs 77） | RFI、防守、隔离、3-bet 候选、翻后带入的翻前范围 |
-| **全下排序** `preflopAllInScore` | 对子 `52 + rank×2.9`；非对子 `30 + 高牌×1.9 + 低牌×1.0 + 连张 1/0.5 + 同花 2.5` | shove / re-shove 范围、open-jam、浅码 4-bet jam 的 EV 对比 |
+| **全下排序** `preflopAllInScore` | 对子 `52 + rank×2.9`；非对子 `30 + 高牌×1.9 + 低牌×1.0 + (A 高 +3) + 连张 1/0.5 + 同花 2.5` | shove / re-shove 范围、open-jam、浅码 4-bet jam 的 EV 对比 |
 
 两者都以真实 **1,326 个组合权重**（对子 6、同花 4、非同花 12）换算成百分位 `pct∈(0,1]`。例如 22 与 76s 的可玩性百分位相近（0.79 / 0.78），但全下百分位分别为 0.53 与 0.30——小对子适合摊牌全下，同花连张不适合。
 
@@ -124,7 +124,7 @@ shortStackOpenMultiplier(d) = clamp(0.72 + d / 90, 0.72, 1)     // 25BB 起逐�
 
 | 有效深度 | 行为 |
 | --- | --- |
-| `≤ 12BB` | **open-jam**：按全下排序，`allInPct ≥ 1 - openRange × 0.85` 时全下，否则弃牌（不再 raise/fold） |
+| `≤ 12BB` | **open-jam**：按全下排序，`allInPct ≥ 1 - min(0.85, openRange × openJamWidth)` 时全下，否则弃牌（不再 raise/fold）；`openJamWidth = clamp(2.1 - 0.25 × 后方人数, 1, 1.9)`——只剩盲注在后时 jam 范围约为开池范围的 1.6–1.9 倍，前位约等于开池范围（10BB BTN 会 jam A5o/Q9o/22，UTG 只 jam AJo+ 一类） |
 | `< 22BB` | 高牌 ≤8 的同花连张（gap≤2）首入直接弃牌：没有隐含赔率 |
 | 其他 | 常规 raise-or-fold |
 
@@ -260,9 +260,12 @@ continueRange   = clamp(0.038 × rangeMult × (1 + 0.50·shallowStackOff·stackR
 
 ```text
 jamRange = shoveRangeFraction(currentLevelBB)          // 分段线性插值，无断崖
-  控制点：10BB→0.19, 18BB→0.14, 30BB→0.09, 55BB→0.05, 90BB→0.04
+  控制点：6BB→0.34, 10BB→0.24, 18BB→0.14, 30BB→0.09, 55BB→0.05, 90BB→0.04
+≤15BB 且 CO/BTN/SB 的首次 jam ×1.45（只剩盲注在后的短码 jam 范围远宽于前位）
 4-bet+ pot ×0.72；被画像真人 ×rangeMult；最终 clamp [0.025, 0.30]
 ```
+
+例：BB 持 A9o 面对 BTN 10BB open-jam（`villR=0.30`，赔率 0.44，胜率 ≈0.53）跟注；K8o/Q7o 弃牌；同样的 A9o 面对 25BB jam（`villR=0.11`）弃牌。
 
 - 对手组合按**全下排序**抽样，困难运行 **850 次**。
 - 模拟对手数 = 台面上**已投入到当前下注级别或已全下**的对手数（`committedOpponents`），而不是 “最后一次加注后的 caller 数 + 1”；尚未行动的玩家不算对手，而是转化为安全边际。
