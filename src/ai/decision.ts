@@ -3,6 +3,7 @@ import { defaultRng } from '../engine/deck';
 import type { Difficulty } from '../engine/gameTypes';
 import { HandCategory } from '../engine/types';
 import {
+  DEFAULT_CHECKED_CAP_TIER,
   estimateEquity,
   estimateEquityVsRange,
   estimateRangeFraction,
@@ -14,10 +15,24 @@ import { boardWetness } from './boardTexture';
 import {
   isSuitedAce,
   isSuitedConnector,
+  preflopAllInPercentile,
   preflopPercentile,
   startingHandClass,
 } from './preflop';
+import {
+  LATE_SHORT_JAM_WIDTH,
+  OPEN_JAM_DEPTH_BB,
+  SHORT_JAM_MAX_BB,
+  openJamWidth,
+  SPECULATIVE_CUTOFF_DEPTH_BB,
+  fiveBetProbability,
+  jamContinueFraction,
+  shortStackOpenMultiplier,
+  shoveRangeFraction,
+  valueFourBetProbability,
+} from './preflopRanges';
 import { analyseHand, type HandFeatures } from './handFeatures';
+import { isBigRiverBet } from './profile';
 
 export interface DecideOptions {
   personality: Personality;
@@ -188,9 +203,14 @@ function pickBetSize(
   }
 
   if (ctx.liveOpponents > 1) fraction += 0.08;
-  const geometric = geometricBetFraction(ctx);
+  // Geometric sizing plans to be all-in by the river with matched bets. That
+  // only describes a polar range that intends to stack off, so it is a
+  // candidate size for polar lines at low SPR — never for thin value,
+  // protection bets or multiway pots.
   const spr = ctx.potBefore > 0 ? (ctx.effectiveStack ?? ctx.stack) / ctx.potBefore : 10;
-  if (spr <= 3) fraction = Math.max(fraction, Math.min(1, geometric));
+  if (polar && spr <= 3 && ctx.liveOpponents <= 1) {
+    fraction = Math.max(fraction, Math.min(1, geometricBetFraction(ctx)));
+  }
   fraction += (p.aggression - 0.6) * 0.08;
 
   // Overbets belong to polar turn/river ranges with nut/blocker interaction,
@@ -277,9 +297,15 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
   if (profile.foldToSteal > 0.55) base.bluffMult *= blend(1.3, stealWeight);
   if (profile.wentToShowdown > 0.45) base.bluffMult *= blend(0.6, weight); // sticky -> bluff less
   if (profile.aggression > 0.6) {
-    base.bluffMult *= blend(0.8, actionWeight);
-    base.valueLean += 0.05 * actionWeight; // call down lighter vs maniacs
-    base.trapMore = actionWeight > 0.3;
+    // Aggression is graded, and it is not by itself evidence of bluffing (it
+    // can be value raises or a run of strong hands). Calling down lighter needs
+    // corroboration from shown-weak river bets; otherwise the lean stays small.
+    const excess = clamp((profile.aggression - 0.6) / 0.25, 0, 1);
+    base.bluffMult *= blend(1 - 0.2 * excess, actionWeight);
+    const shownWeakEvidence =
+      c.riverBetsShown >= 3 ? clamp(profile.bluffCaught / 0.3, 0.4, 1.3) : 0.7;
+    base.valueLean += 0.05 * actionWeight * excess * shownWeakEvidence;
+    base.trapMore = actionWeight > 0.3 && excess >= 0.3;
   }
 
   // Hero folds to c-bets a lot -> barrel/bluff more (and vice versa).
@@ -296,15 +322,22 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
   base.rangeMult = blend(observedRange, weight);
 
   // River honesty: calibrate how much of the hero's betting range we assume is
-  // bluffs from actual showdown evidence, instead of a fixed formula.
+  // bluffs from showdown evidence. The evidence is a *shown-weak* rate, not a
+  // bluff rate (successful bluffs are never shown, big and small bets get
+  // called at different rates), so the read is capped and only partly trusted.
+  const SHOWN_WEAK_TRUST = 0.7;
   const readScale = (weak: number, shown: number): number =>
-    shown >= 4 ? clamp(weak / shown / 0.33, 0.35, 1.8) : NaN;
+    shown >= 4 ? clamp(weak / shown / 0.33, 0.5, 1.5) : NaN;
   const all = readScale(c.riverBetsWeak, c.riverBetsShown);
-  if (!Number.isNaN(all)) base.bluffReadAll = blend(all, weight);
+  if (!Number.isNaN(all)) base.bluffReadAll = blend(all, weight * SHOWN_WEAK_TRUST);
   const big = readScale(c.riverBigWeak, c.riverBigShown);
-  base.bluffReadBig = Number.isNaN(big) ? base.bluffReadAll : blend(big, weight);
+  base.bluffReadBig = Number.isNaN(big)
+    ? base.bluffReadAll
+    : blend(big, weight * SHOWN_WEAK_TRUST);
   const small = readScale(c.riverSmallWeak, c.riverSmallShown);
-  base.bluffReadSmall = Number.isNaN(small) ? base.bluffReadAll : blend(small, weight);
+  base.bluffReadSmall = Number.isNaN(small)
+    ? base.bluffReadAll
+    : blend(small, weight * SHOWN_WEAK_TRUST);
 
   return base;
 }
@@ -369,11 +402,14 @@ function decidePreflop(
   const mayRaise = ctx.canRaise !== false && ctx.maxRaiseTo > currentLevel;
   const style = clamp(p.vpip / 0.27, 0.72, 1.4);
   const strength = pct + (rng() - 0.5) * 0.025;
+  const effective = Math.max(1, Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack));
+  const effectiveDepthBB = (effective + ctx.totalCommitted) / bigBlind;
   const reason = [
     `hand=${hand}`,
     `pct=${pct.toFixed(2)}`,
     `pot=${potType}`,
     `pos=${position}`,
+    `eff=${effectiveDepthBB.toFixed(0)}bb`,
   ];
 
   // Strong regulars open raise-or-fold. A deliberate limp mix is reserved for
@@ -382,18 +418,45 @@ function decidePreflop(
     if (canCheck && position === 'bb') {
       return mk('check', 0, rng, false, [...reason, 'pf-option']);
     }
-    const openRange = clamp(
-      openingRange(position, ctx.tableSize ?? 6) * style + exploit.stealBonus,
-      0.08,
-      0.82,
-    );
-    if (strength < 1 - openRange) {
-      return mk('fold', 0, rng, false, [...reason, `rfi=${openRange.toFixed(2)}`]);
+    // Depth enters at the unopened node already: speculative hands lose their
+    // implied odds short, and very short stacks open-jam instead of raise-fold.
+    const openRange =
+      clamp(
+        openingRange(position, ctx.tableSize ?? 6) * style + exploit.stealBonus,
+        0.08,
+        0.82,
+      ) * shortStackOpenMultiplier(effectiveDepthBB);
+    reason.push(`rfi=${openRange.toFixed(2)}`);
+    if (effectiveDepthBB <= OPEN_JAM_DEPTH_BB && mayRaise) {
+      const jamStrength =
+        preflopAllInPercentile(ctx.hole[0], ctx.hole[1]) + (rng() - 0.5) * 0.025;
+      const jamRange = Math.min(
+        0.85,
+        openRange * openJamWidth(ctx.playersBehind ?? ctx.liveOpponents),
+      );
+      reason.push(`jam=${jamRange.toFixed(2)}`);
+      if (jamStrength >= 1 - jamRange) {
+        return mk('allin', ctx.maxRaiseTo, rng, false, [...reason, 'pf-open-jam'], true);
+      }
+      return mk('fold', 0, rng, false, [...reason, 'pf-open-jam-fold']);
+    }
+    const [a, b] = ctx.hole;
+    const speculative =
+      a.rank !== b.rank && isSuitedConnector(a, b, 2) && Math.max(a.rank, b.rank) <= 8;
+    if (
+      strength < 1 - openRange ||
+      (speculative && effectiveDepthBB < SPECULATIVE_CUTOFF_DEPTH_BB)
+    ) {
+      return mk('fold', 0, rng, false, [...reason, 'pf-rfi-fold']);
     }
     if (!mayRaise) return mk('call', 0, rng, false, [...reason, 'pf-complete']);
 
+    // The limp branch keeps a small share of premiums (limp-reraise), so a
+    // small-blind limp is never a capped range the big blind can attack freely.
     const sbLimpMix =
-      position === 'sb' && !isPremium(hand) && rng() < 0.28 * (1 - p.aggression * 0.35);
+      position === 'sb' &&
+      (!isPremium(hand) || rng() < 0.18) &&
+      rng() < 0.28 * (1 - p.aggression * 0.35);
     if (sbLimpMix) return mk('call', 0, rng, false, [...reason, 'pf-sb-limp']);
 
     const { amount, allIn } = sizeRaise(ctx, 0.9, rng, false, Infinity, 0, 2.55);
@@ -401,10 +464,12 @@ function decidePreflop(
   }
 
   // Limped live pots: isolate with a live-sized raise. Over-limp only hands
-  // whose pair/suited structure can realise multiway implied odds.
+  // whose pair/suited structure can realise multiway implied odds. Extra
+  // limpers add dead money but also callers, so the isolation range tightens
+  // while the isolation size grows.
   if (potType === 'limped' || (raises === 0 && limpers > 0)) {
     const baseOpen = openingRange(position, ctx.tableSize ?? 6) * style;
-    const isoRange = clamp(baseOpen + 0.1 + limpers * 0.018, 0.16, 0.58);
+    const isoRange = clamp(baseOpen + 0.1 - Math.max(0, limpers - 1) * 0.02, 0.16, 0.58);
     const impliedHand =
       ctx.hole[0].rank === ctx.hole[1].rank ||
       isSuitedAce(ctx.hole[0], ctx.hole[1]) ||
@@ -429,32 +494,57 @@ function decidePreflop(
   }
 
   // Large raises/all-ins are equity-vs-range decisions, not VPIP cutoffs.
-  const effective = Math.max(1, Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack));
-  const effectiveDepthBB = (effective + ctx.totalCommitted) / bigBlind;
-  reason.push(`eff=${effectiveDepthBB.toFixed(0)}bb`);
   const committedCall =
     toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo;
   if (committedCall) {
-    let jamRange =
-      wagerBB >= 55 ? 0.045 : wagerBB >= 30 ? 0.07 : wagerBB >= 18 ? 0.11 : 0.17;
+    let jamRange = shoveRangeFraction(wagerBB);
+    // A short open-jam with only the blinds behind (cutoff, button or the small
+    // blind) comes from a far wider range than the same wager from up front.
+    const lateShortJam =
+      wagerBB <= SHORT_JAM_MAX_BB &&
+      raises <= 1 &&
+      (ctx.aggressorPosition
+        ? ctx.aggressorPosition === 'co' ||
+          ctx.aggressorPosition === 'btn' ||
+          ctx.aggressorPosition === 'sb'
+        : (ctx.aggressorPositionFactor ?? 0.5) >= 0.72);
+    if (lateShortJam) jamRange *= LATE_SHORT_JAM_WIDTH;
     if (potType === 'fourBetPlus') jamRange *= 0.72;
     if (ctx.aggressorIsHero) jamRange *= exploit.rangeMult;
     jamRange = clamp(jamRange, 0.025, 0.3);
+    // Everyone already committed contests the pot: the shover, callers and
+    // players who went all-in earlier. Players still to act are not counted as
+    // opponents; their unclosed action instead costs a realisation margin.
+    const playersBehind = Math.max(0, ctx.playersBehind ?? 0);
+    const committedOpponents = clamp(
+      ctx.committedOpponents ?? callers + 1,
+      1,
+      Math.max(1, ctx.liveOpponents),
+    );
     const eq = estimateEquityVsRange({
       heroCards: ctx.hole,
-      opponents: Math.max(1, Math.min(ctx.liveOpponents, callers + 1)),
+      opponents: committedOpponents,
       iterations: difficulty === 'hard' ? 850 : 500,
       rng,
       rangeFraction: jamRange,
       preflopRangeFraction: 1,
+      preflopRanking: 'allin',
     }).equity;
     const odds = toCall / Math.max(1, potBefore + toCall);
+    const potAfterCall = potBefore + toCall;
+    const chipsBehind = Math.max(0, effective - toCall);
+    const notClosed = playersBehind > 0 || chipsBehind > potAfterCall * 0.2;
+    const margin =
+      0.012 +
+      Math.min(2, playersBehind) * 0.012 +
+      (notClosed && chipsBehind > potAfterCall * 0.2 ? 0.01 : 0);
     reason.push(
       `jamEq=${eq.toFixed(2)}`,
       `odds=${odds.toFixed(2)}`,
       `villR=${jamRange.toFixed(2)}`,
+      `opp=${committedOpponents}`,
     );
-    if (eq + (ctx.aggressorIsHero ? exploit.valueLean * 0.3 : 0) >= odds + 0.012) {
+    if (eq + (ctx.aggressorIsHero ? exploit.valueLean * 0.3 : 0) >= odds + margin) {
       const deepJam = wagerBB >= 40;
       const isolationValue = deepJam
         ? hand === 'AA' || hand === 'KK'
@@ -561,26 +651,71 @@ function decidePreflop(
       return mk('fold', 0, rng, false, [...reason, 'pf-fold-vs-3bet']);
     }
 
-    const value4Threshold =
-      0.968 - shallowPressure * 0.022 + deepRealisation * 0.006;
-    const value4 = strength >= value4Threshold;
+    // Value 4-bets come from explicit hand classes (QQ+/AK pure, JJ/AQs/TT as
+    // depth-dependent mixes), not from a percentile of the playability order.
+    const value4 =
+      rng() < valueFourBetProbability(ctx.hole, shallowPressure, deepRealisation);
     if (mayRaise && (value4 || bluff4)) {
       if (effectiveDepthBB <= 50 && wagerBB >= 7.5) {
+        // Shallow: fold / call / jam are compared by EV instead of jamming every
+        // qualifying hand. The jam is evaluated against the slice of the 3-bet
+        // range that actually continues, the call against the whole 3-bet range.
         const target = Math.min(
           ctx.maxRaiseTo,
-          Math.max(
-            ctx.minRaiseTo,
-            Math.round(ctx.streetCommitted + effective),
-          ),
+          Math.max(ctx.minRaiseTo, Math.round(ctx.streetCommitted + effective)),
         );
-        return mk(
-          target >= ctx.maxRaiseTo ? 'allin' : 'raise',
-          target,
+        const jamRisk = Math.max(0, target - ctx.streetCommitted);
+        const callerContribution = Math.max(0, target - currentLevel);
+        const threeBetRange = clamp(
+          (inPosition ? 0.075 : 0.095) * (ctx.aggressorIsHero ? exploit.rangeMult : 1),
+          0.04,
+          0.16,
+        );
+        const continueShare = clamp(
+          jamContinueFraction(jamRisk, potBefore) / exploit.foldPressure,
+          0.2,
+          0.8,
+        );
+        const iterations = difficulty === 'hard' ? 520 : 360;
+        const eqCalled = estimateEquityVsRange({
+          heroCards: ctx.hole,
+          opponents: 1,
+          iterations,
           rng,
-          bluff4,
-          [...reason, bluff4 ? 'pf-shallow-4bet-bluff' : 'pf-shallow-4bet-value'],
-          true,
+          rangeFraction: threeBetRange * continueShare,
+          preflopRangeFraction: 1,
+          preflopRanking: 'allin',
+        }).equity;
+        const eqVsThreeBet = estimateEquityVsRange({
+          heroCards: ctx.hole,
+          opponents: 1,
+          iterations,
+          rng,
+          rangeFraction: threeBetRange,
+          preflopRangeFraction: 1,
+          preflopRanking: 'allin',
+        }).equity;
+        const evJam = actionEV(eqCalled, potBefore, jamRisk, 1 - continueShare, callerContribution);
+        const realisation = inPosition ? 0.9 : 0.8;
+        const evCall = eqVsThreeBet * (potBefore + toCall) * realisation - toCall;
+        reason.push(
+          `evJam=${(evJam / bigBlind).toFixed(1)}bb`,
+          `evCall=${(evCall / bigBlind).toFixed(1)}bb`,
         );
+        if (evJam > Math.max(0, evCall) + potBefore * 0.01) {
+          return mk(
+            target >= ctx.maxRaiseTo ? 'allin' : 'raise',
+            target,
+            rng,
+            bluff4,
+            [...reason, bluff4 ? 'pf-shallow-4bet-bluff' : 'pf-shallow-4bet-value'],
+            true,
+          );
+        }
+        if (evCall > 0 && (value4 || strength >= 1 - continueRange)) {
+          return mk('call', 0, rng, false, [...reason, 'pf-call-3bet'], true);
+        }
+        return mk('fold', 0, rng, false, [...reason, 'pf-fold-vs-3bet']);
       }
       const { amount, allIn } = sizeRaise(
         ctx,
@@ -606,7 +741,7 @@ function decidePreflop(
   const shallowStackOff = clamp((75 - effectiveDepthBB) / 45, 0, 1);
   const deepFourBetPlay = clamp((effectiveDepthBB - 160) / 180, 0, 1);
   const continueRange = clamp(
-    0.05 *
+    0.038 *
       (ctx.aggressorIsHero ? exploit.rangeMult : 1) *
       (
         1 +
@@ -619,11 +754,13 @@ function decidePreflop(
   if (strength < 1 - continueRange) {
     return mk('fold', 0, rng, false, [...reason, 'pf-fold-vs-4bet']);
   }
-  const fiveBetThreshold =
-    0.986 - shallowStackOff * 0.018 + deepFourBetPlay * 0.004;
-  const fiveBetFrequency =
-    0.72 + shallowStackOff * 0.2 - deepFourBetPlay * 0.12;
-  if (mayRaise && strength >= fiveBetThreshold && rng() < fiveBetFrequency) {
+  // 5-bet candidates are explicit classes (AA/KK/QQ/AK, JJ/TT only short), so
+  // AK keeps stacking off at every depth while JJ does not simply because it
+  // ranks above AKs for playability.
+  if (
+    mayRaise &&
+    rng() < fiveBetProbability(ctx.hole, shallowStackOff, deepFourBetPlay)
+  ) {
     const { amount, allIn } = sizeRaise(ctx, 0.8, rng, true, Infinity, 0, 2.05);
     return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'pf-fivebet-value'], true);
   }
@@ -843,25 +980,53 @@ function decidePostflop(
   });
   if (ctx.facingCheckRaise) bluffShare *= 0.62;
   if (facingBet && ctx.aggressorIsHero) {
-    const big = (ctx.betToPot ?? 0) >= 0.7;
-    bluffShare *= big ? exploit.bluffReadBig : exploit.bluffReadSmall;
+    bluffShare *= isBigRiverBet(ctx.betToPot ?? 0)
+      ? exploit.bluffReadBig
+      : exploit.bluffReadSmall;
   }
   bluffShare = clamp(bluffShare, 0.03, 0.5);
 
   const preflopRange = preflopRangeForPostflop(ctx, exploit);
-  const alreadyCalled =
-    facingBet ? Math.max(0, ctx.liveOpponents - 1 - (ctx.playersBehind ?? 0)) : 0;
-  const eq = estimateEquityVsRange({
+  const playersBehind = Math.max(0, ctx.playersBehind ?? 0);
+  const alreadyCalled = facingBet ? Math.max(0, ctx.liveOpponents - 1 - playersBehind) : 0;
+  // Nobody has bet: the opponents who already checked in front of us are
+  // capped by that check. A check made to the previous street's aggressor is
+  // barely informative (callers check almost everything to the raiser); a check
+  // when nobody had the initiative removes most of the betting tier, and a
+  // second consecutive check-through a little more. Players behind have shown
+  // nothing on this street, but did check the previous one if it went through.
+  const checkedInFront = facingBet ? 0 : Math.max(0, ctx.liveOpponents - playersBehind);
+  const checkedBehind =
+    !facingBet && ctx.previousStreetCheckedThrough ? playersBehind : 0;
+  const checkedCapTier = ctx.wasAggressorLastStreet
+    ? 0.08
+    : clamp(
+        DEFAULT_CHECKED_CAP_TIER -
+          0.05 * Math.max(0, ctx.liveOpponents - 1) +
+          // A bettor who stops betting has mostly given up or is pot-controlling;
+          // a second consecutive check-through caps a little more as well.
+          (ctx.villainCheckedToMe ? 0.06 : 0) +
+          (ctx.previousStreetCheckedThrough ? 0.06 : 0),
+        0.16,
+        0.42,
+      );
+  const baseRangeOptions = {
     heroCards: ctx.hole,
     board: ctx.board,
     opponents: Math.max(1, ctx.liveOpponents),
+    cappedCallers: alreadyCalled,
+    checkedOpponents: checkedInFront + checkedBehind,
+    checkedCapTier,
+    unactedOpponents: facingBet ? playersBehind : playersBehind - checkedBehind,
+    preflopRangeFraction: preflopRange,
+  };
+  let equityIterations = iterations;
+  let eq = estimateEquityVsRange({
+    ...baseRangeOptions,
     iterations,
     rng,
     rangeFraction,
     bluffShare,
-    cappedCallers: alreadyCalled,
-    unactedOpponents: facingBet ? Math.max(0, ctx.playersBehind ?? 0) : 0,
-    preflopRangeFraction: preflopRange,
   }).equity;
 
   const { toCall, potBefore, canCheck, street } = ctx;
@@ -873,6 +1038,87 @@ function decidePostflop(
     potBefore > 0 ? Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack) / potBefore : 10;
   let valueThreshold = Math.min(0.82, 0.55 + Math.max(0, opponents - 1) * 0.07);
   valueThreshold -= clamp(ctx.recentImage - 0.3, 0, 0.4) * 0.1;
+
+  // Adaptive budget: a fixed sample cannot support a 1-2 point margin near a
+  // decision boundary (SE ≈ 1.7% at 850 samples). Spend a second batch only
+  // when the estimate sits within the noise band of the nearest threshold.
+  if (street !== 'river' || opponents > 1) {
+    const directOddsNow = facingBet ? toCall / Math.max(1, potBefore + toCall) : NaN;
+    const boundary = facingBet ? directOddsNow : valueThreshold;
+    const se = Math.sqrt(Math.max(0.01, eq * (1 - eq)) / iterations);
+    if (Math.abs(eq - boundary) < 1.6 * se) {
+      const second = estimateEquityVsRange({
+        ...baseRangeOptions,
+        iterations,
+        rng,
+        rangeFraction,
+        bluffShare,
+      }).equity;
+      eq = (eq + second) / 2;
+      equityIterations = iterations * 2;
+    }
+  }
+
+  // Equity once an opponent CONTINUES against our bet/raise: the weakest
+  // `foldEquity` share of the range folds, the rest calls. Using the pre-bet
+  // equity here overstated every bet and raise, because it counted hands that
+  // the fold-equity model itself assumed would fold.
+  //
+  // Multiway, `foldEquity` is the probability that EVERYONE folds. Treating the
+  // players as (approximately) independent, each folds with f = FE^(1/n), so
+  // the called branch is played against the ~n(1-f) opponents who continue,
+  // each with the top (1-f) of their range — a joint response rather than all
+  // n opponents continuing with unnarrowed ranges.
+  const calledEquityCache = new Map<number, number>();
+  const calledEquity = (foldEquity: number): number => {
+    const key = Math.round(clamp(foldEquity, 0, 0.85) * 20);
+    const cached = calledEquityCache.get(key);
+    if (cached !== undefined) return cached;
+    const perPlayerFold = Math.pow(key / 20, 1 / opponents);
+    const continueShare = clamp(1 - perPlayerFold, 0.15, 1);
+    const continuing = clamp(Math.round(opponents * (1 - perPlayerFold)), 1, opponents);
+    const shrink = (n: number) => Math.min(n, continuing);
+    const value = estimateEquityVsRange({
+      ...baseRangeOptions,
+      opponents: continuing,
+      // Keep the role mix when fewer opponents continue: the bettor (if any)
+      // continues first, then the passive seats.
+      unactedOpponents: shrink(baseRangeOptions.unactedOpponents),
+      checkedOpponents: shrink(baseRangeOptions.checkedOpponents),
+      cappedCallers: shrink(baseRangeOptions.cappedCallers),
+      continueShare,
+      iterations: Math.max(120, Math.round(iterations * 0.6)),
+      rng,
+      rangeFraction: clamp(rangeFraction * continueShare, 0.04, 0.88),
+      // Most bluffs release against aggression; a few continue as re-bluffs.
+      bluffShare: facingBet ? bluffShare * 0.3 : 0,
+    }).equity;
+    calledEquityCache.set(key, value);
+    return value;
+  };
+  type Sized = ReturnType<typeof sizeRaise>;
+  const aggressiveEV = (sized: Sized, foldEquity: number): number =>
+    actionEV(
+      calledEquity(foldEquity),
+      potBefore,
+      sized.heroRisk,
+      foldEquity,
+      sized.callerContribution,
+    );
+  // Checking realises (most of) the current equity; on the river it is the
+  // showdown value itself. Marginal hands realise less out of position and
+  // multiway. Bets and raises must compete with this, not merely with zero.
+  const checkRealisation =
+    (street === 'river' ? 1 : inPosition ? 0.95 : 0.85) *
+    Math.max(0.7, 1 - Math.max(0, opponents - 1) * 0.06);
+  const evCheck = eq * potBefore * checkRealisation;
+  // Randomisation belongs to near-indifferent actions. An action whose EV is
+  // clearly below the baseline is removed; inside the indifference band the
+  // personality/mixing frequency decides (soft edge, since the EV model has
+  // its own bias). ΔEV is measured in pots.
+  const indifferenceGate = (deltaEV: number): number =>
+    clamp((deltaEV / Math.max(1, potBefore) + 0.07) / 0.05, 0, 1);
+
   const nutRange =
     eq >= 0.88 &&
     (features.category >= HandCategory.TwoPair ||
@@ -899,6 +1145,7 @@ function decidePostflop(
   const committed = isShortStack(ctx);
   const reason = [
     `eq=${eq.toFixed(2)}`,
+    `n=${equityIterations}`,
     `vt=${valueThreshold.toFixed(2)}`,
     `rq=${rangeFraction.toFixed(2)}`,
     `pfR=${preflopRange.toFixed(2)}`,
@@ -908,111 +1155,96 @@ function decidePostflop(
   const valueSize = pickBetSize(p, ctx, features, nutRange, rng);
   const bluffSize = pickBetSize(p, ctx, features, true, rng);
   const thinSize = pickBetSize(p, ctx, features, false, rng);
+  const isBluffHand =
+    features.category === HandCategory.HighCard ||
+    features.pairKind === 'under' ||
+    hasDraw;
 
   if (canCheck) {
-    const protectionBet =
-      !strongValue &&
-      protectionValue &&
-      rng() <
-        clamp(
-          0.36 +
-            p.aggression * 0.34 +
-            wet * 0.1 -
-            Math.max(0, opponents - 1) * 0.07 +
-            (inPosition ? 0.05 : 0),
-          0.25,
-          0.78,
-        );
-    if (strongValue || protectionBet) {
+    // One plan, one roll. The first applicable line below owns the decision;
+    // failing its roll means CHECK, never a second chance through another
+    // branch (which would compound to 1 - Π(1 - p_i) and blow past every cap).
+    interface BetPlan {
+      label: string;
+      checkLabel: string;
+      chance: number;
+      size: number;
+      isBluff: boolean;
+      /** Extra fold equity from the story (e.g. everyone checked last street). */
+      foldEquityBonus: number;
+      /** Whether the bet must beat checking by EV (nut value skips the gate). */
+      evGate: boolean;
+      /** Stack off at a commit spot only with real equity. */
+      allowAllIn: boolean;
+      xBetBase?: number;
+    }
+    let plan: BetPlan | null = null;
+
+    if (strongValue || protectionValue) {
       const dryEnoughToTrap = wet < 0.48 && features.category >= HandCategory.TwoPair;
       const trapChance =
         (exploit.trapMore ? 0.2 : 0) +
         (dryEnoughToTrap && !inPosition && ctx.villainWasAggressorLastStreet ? 0.12 : 0);
-      if (mayRaise && rng() >= trapChance) {
-        const size = nutRange ? valueSize : thinSize;
-        const { amount, allIn } = sizeRaise(
-          ctx,
-          size,
-          rng,
-          committed && eq >= 0.72,
-          Infinity,
-          0,
-          inPosition ? 2.7 : 3.15,
-        );
-        return mk(
-          allIn ? 'allin' : 'raise',
-          amount,
-          rng,
-          false,
-          [
-            ...reason,
-            protectionBet ? 'protection-value' : nutRange ? 'polar-value' : 'thin-value',
-          ],
-        );
-      }
-      return mk('check', 0, rng, false, [...reason, 'value-trap']);
+      const protectionChance = clamp(
+        0.36 +
+          p.aggression * 0.34 +
+          wet * 0.1 -
+          Math.max(0, opponents - 1) * 0.07 +
+          (inPosition ? 0.05 : 0),
+        0.25,
+        0.78,
+      );
+      plan = {
+        label: strongValue
+          ? nutRange
+            ? 'polar-value'
+            : 'thin-value'
+          : 'protection-value',
+        checkLabel: strongValue ? 'value-trap' : 'protection-check',
+        chance: (strongValue ? 1 : protectionChance) * (1 - trapChance),
+        size: nutRange ? valueSize : thinSize,
+        isBluff: false,
+        foldEquityBonus: 0,
+        evGate: !nutRange,
+        allowAllIn: committed && eq >= 0.72,
+        xBetBase: inPosition ? 2.7 : 3.15,
+      };
     }
 
     // The pre-flop aggressor retains a range advantage on many flops. C-bet a
-    // board-aware subset rather than requiring a made value hand or rolling the
-    // generic bluff frequency, which otherwise makes multiway pots check down.
+    // board-aware subset rather than requiring a made value hand.
     const initiativeCbet =
-      street === 'flop' &&
-      !!ctx.wasAggressorLastStreet &&
-      !ctx.facingCheckRaise;
+      street === 'flop' && !!ctx.wasAggressorLastStreet && !ctx.facingCheckRaise;
     const rangeCbetCandidate =
-      hasDraw ||
-      features.bluffQuality >= 0.08 ||
-      features.showdownValue <= 0.3;
-    if (initiativeCbet && !protectionValue && rangeCbetCandidate && mayRaise) {
+      hasDraw || features.bluffQuality >= 0.08 || features.showdownValue <= 0.3;
+    if (!plan && initiativeCbet && rangeCbetCandidate) {
       const bloatedPotBoost =
-        ctx.preflopPotType === 'threeBet' || ctx.preflopPotType === 'fourBetPlus'
-          ? 0.08
-          : 0;
+        ctx.preflopPotType === 'threeBet' || ctx.preflopPotType === 'fourBetPlus' ? 0.08 : 0;
+      // These are FINAL frequencies (single roll), so they are set at the level
+      // a c-betting range actually fires: ~40% of non-value hands heads-up in
+      // position, ~30% three-way, before the EV gate.
       const cbetBase =
-        0.28 +
-        p.aggression * 0.22 +
-        (inPosition ? 0.08 : 0) +
+        0.4 +
+        p.aggression * 0.24 +
+        (inPosition ? 0.1 : 0) +
         bloatedPotBoost -
-        Math.max(0, opponents - 1) * 0.08 -
+        Math.max(0, opponents - 1) * 0.1 -
         wet * 0.08;
       const cbetQuality = clamp(
-        0.52 +
-          features.bluffQuality * 0.5 +
-          (features.overcards > 0 ? 0.05 : 0),
-        0.45,
+        0.55 + features.bluffQuality * 0.5 + (features.overcards > 0 ? 0.06 : 0),
+        0.55,
         1,
       );
-      const cbetChance = clamp(
-        cbetBase * cbetQuality * exploit.foldPressure,
-        0.04,
-        0.58,
-      );
-      const foldEquity = estimateFoldEquity(ctx, exploit, thinSize, features, false);
-      const sized = sizeRaise(ctx, thinSize, rng, committed, Infinity);
-      if (
-        actionEV(
-          eq,
-          potBefore,
-          sized.heroRisk,
-          foldEquity,
-          sized.callerContribution,
-        ) > 0 &&
-        rng() < cbetChance
-      ) {
-        const { amount, allIn } = sized;
-        const isRangeBluff =
-          features.category === HandCategory.HighCard ||
-          features.pairKind === 'under' ||
-          hasDraw;
-        return mk(
-          allIn ? 'allin' : 'raise',
-          amount,
-          rng,
-          isRangeBluff,
-          [...reason, 'range-cbet'],
-        );
-      }
+      plan = {
+        label: 'range-cbet',
+        checkLabel: 'cbet-check',
+        chance: clamp(cbetBase * cbetQuality * exploit.foldPressure, 0.04, 0.62),
+        size: thinSize,
+        isBluff: isBluffHand,
+        foldEquityBonus: 0,
+        evGate: true,
+        allowAllIn: committed,
+      };
     }
 
     // A float/probe requires evidence that the prior aggressor has actually
@@ -1021,37 +1253,30 @@ function decidePostflop(
       !!ctx.villainWasAggressorLastStreet &&
       !!ctx.villainCheckedToMe &&
       !ctx.wasAggressorLastStreet;
-    if (floatSpot && mayRaise && opponents <= 2) {
-      const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, false);
-      const sized = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
-      const profitable =
-        actionEV(
-          eq,
-          potBefore,
-          sized.heroRisk,
-          foldEquity,
-          sized.callerContribution,
-        ) > 0;
-      const stabChance = clamp(
-        (0.28 + (inPosition ? 0.2 : 0) + p.aggression * 0.12) *
-          exploit.foldPressure *
-          (0.45 + features.bluffQuality),
-        0,
-        0.72,
-      );
-      if (profitable && rng() < stabChance) {
-        const { amount, allIn } = sized;
-        return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'checked-to-float']);
-      }
+    if (!plan && floatSpot && opponents <= 2) {
+      plan = {
+        label: 'checked-to-float',
+        checkLabel: 'float-check',
+        chance: clamp(
+          (0.34 + (inPosition ? 0.2 : 0) + p.aggression * 0.12) *
+            exploit.foldPressure *
+            (0.45 + features.bluffQuality),
+          0,
+          0.72,
+        ),
+        size: bluffSize,
+        isBluff: true,
+        foldEquityBonus: 0,
+        evGate: true,
+        allowAllIn: committed,
+      };
     }
 
-    // After an entire post-flop street checks through, every range is more
-    // capped. Strong live players probe a controlled mix on the next street,
-    // especially late in position, instead of independently re-rolling a tiny
-    // generic bluff probability and checking all the way to showdown.
+    // After an entire street checks through, every range is more capped, but
+    // not sealed (check-raise traps, protected checks, slow-plays). The story
+    // adds a modest fold-equity bonus; the bet still has to beat checking.
     const checkedThroughProbe =
-      (street === 'turn' || street === 'river') &&
-      !!ctx.previousStreetCheckedThrough;
+      (street === 'turn' || street === 'river') && !!ctx.previousStreetCheckedThrough;
     const probeCandidate =
       street === 'river'
         ? features.category === HandCategory.HighCard
@@ -1061,114 +1286,97 @@ function decidePostflop(
             features.pairKind !== 'top' &&
             features.pairKind !== 'over') ||
           features.bluffQuality >= 0.1;
-    if (checkedThroughProbe && !protectionValue && probeCandidate && mayRaise) {
+    if (!plan && checkedThroughProbe && probeCandidate) {
       const probeBase =
-        0.2 +
-        p.aggression * 0.22 +
-        ctx.positionFactor * 0.18 -
-        Math.max(0, opponents - 1) * 0.065 -
+        0.28 +
+        p.aggression * 0.24 +
+        ctx.positionFactor * 0.2 -
+        Math.max(0, opponents - 1) * 0.07 -
         (street === 'river' ? 0.03 : 0);
       const probeQuality =
         features.category === HandCategory.Pair
           ? 0.75
-          : clamp(
-              0.66 +
-                features.bluffQuality * 0.42 -
-                features.showdownValue * 0.18,
-              0.55,
-              1,
-            );
-      const probeChance = clamp(
-        probeBase * probeQuality * exploit.foldPressure,
-        0.06,
-        0.62,
-      );
-      const foldEquity = clamp(
-        estimateFoldEquity(ctx, exploit, thinSize, features, false) +
-          0.08 +
-          ctx.positionFactor * 0.04,
-        0.08,
-        0.78,
-      );
-      const sized = sizeRaise(ctx, thinSize, rng, committed, Infinity);
-      if (
-        actionEV(
-          eq,
-          potBefore,
-          sized.heroRisk,
-          foldEquity,
-          sized.callerContribution,
-        ) > 0 &&
-        rng() < probeChance
-      ) {
-        const { amount, allIn } = sized;
-        const isProbeBluff =
-          features.category === HandCategory.HighCard ||
-          features.pairKind === 'under' ||
-          hasDraw;
-        return mk(
-          allIn ? 'allin' : 'raise',
-          amount,
-          rng,
-          isProbeBluff,
-          [...reason, isProbeBluff ? 'delayed-probe' : 'delayed-protection'],
-        );
-      }
+          : clamp(0.66 + features.bluffQuality * 0.42 - features.showdownValue * 0.18, 0.55, 1);
+      plan = {
+        label: isBluffHand ? 'delayed-probe' : 'delayed-protection',
+        checkLabel: 'probe-check',
+        chance: clamp(probeBase * probeQuality * exploit.foldPressure, 0.06, 0.64),
+        size: thinSize,
+        isBluff: isBluffHand,
+        foldEquityBonus: 0.04 + ctx.positionFactor * 0.03,
+        evGate: true,
+        allowAllIn: committed,
+      };
     }
 
     const barreling =
-      !!ctx.wasAggressorLastStreet &&
-      !!ctx.bluffedLastStreet &&
-      !ctx.facingCheckRaise;
-    if (barreling && mayRaise) {
+      !!ctx.wasAggressorLastStreet && !!ctx.bluffedLastStreet && !ctx.facingCheckRaise;
+    if (!plan && barreling) {
       const lastBoardCard = ctx.board[ctx.board.length - 1];
       const highRunout = !!lastBoardCard && lastBoardCard.rank >= 11;
-      const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, false);
-      const sized = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
-      const profitable =
-        actionEV(
-          eq,
-          potBefore,
-          sized.heroRisk,
-          foldEquity,
-          sized.callerContribution,
-        ) > 0;
-      let barrelChance =
-        (street === 'river' ? 0.34 : 0.52) +
-        (highRunout ? 0.08 : 0) +
-        features.bluffQuality * 0.18;
-      barrelChance = clamp(barrelChance * exploit.bluffMult, 0, 0.72);
-      if (profitable && rng() < barrelChance) {
-        const { amount, allIn } = sized;
-        return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'planned-barrel']);
-      }
-      return mk('check', 0, rng, false, [...reason, 'barrel-giveup']);
+      plan = {
+        label: 'planned-barrel',
+        checkLabel: 'barrel-giveup',
+        chance: clamp(
+          ((street === 'river' ? 0.34 : 0.52) +
+            (highRunout ? 0.08 : 0) +
+            features.bluffQuality * 0.18) *
+            exploit.bluffMult,
+          0,
+          0.72,
+        ),
+        size: bluffSize,
+        isBluff: true,
+        foldEquityBonus: 0,
+        evGate: true,
+        allowAllIn: committed,
+      };
     }
 
-    if (mayRaise && bluffFrequency > 0) {
-      const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, false);
-      const sized = sizeRaise(ctx, bluffSize, rng, committed, Infinity);
-      if (
-        actionEV(
-          eq,
-          potBefore,
-          sized.heroRisk,
-          foldEquity,
-          sized.callerContribution,
-        ) > 0 &&
-        rng() < bluffFrequency
-      ) {
-        const { amount, allIn } = sized;
-        return mk(
-          allIn ? 'allin' : 'raise',
-          amount,
-          rng,
-          true,
-          [...reason, hasDraw ? 'candidate-semi-bluff' : 'blocker-bluff'],
-        );
-      }
+    if (!plan && bluffFrequency > 0) {
+      plan = {
+        label: hasDraw ? 'candidate-semi-bluff' : 'blocker-bluff',
+        checkLabel: 'showdown-check',
+        chance: bluffFrequency,
+        size: bluffSize,
+        isBluff: true,
+        foldEquityBonus: 0,
+        evGate: true,
+        allowAllIn: committed,
+      };
     }
-    return mk('check', 0, rng, false, [...reason, 'showdown-check']);
+
+    if (!plan || !mayRaise) {
+      return mk('check', 0, rng, false, [...reason, plan?.checkLabel ?? 'showdown-check']);
+    }
+
+    const sized = sizeRaise(
+      ctx,
+      plan.size,
+      rng,
+      plan.allowAllIn,
+      Infinity,
+      0,
+      plan.xBetBase ?? 2.35,
+    );
+    let chance = plan.chance;
+    if (plan.evGate) {
+      const foldEquity = clamp(
+        estimateFoldEquity(ctx, exploit, plan.size, features, false) + plan.foldEquityBonus,
+        0.08,
+        0.78,
+      );
+      const deltaEV = aggressiveEV(sized, foldEquity) - evCheck;
+      reason.push(
+        `fe=${foldEquity.toFixed(2)}`,
+        `dEV=${(deltaEV / Math.max(1, potBefore)).toFixed(2)}`,
+      );
+      chance *= indifferenceGate(deltaEV);
+    }
+    if (rng() < chance) {
+      return mk(sized.allIn ? 'allin' : 'raise', sized.amount, rng, plan.isBluff, [...reason, plan.label]);
+    }
+    return mk('check', 0, rng, false, [...reason, plan.checkLabel]);
   }
 
   const directOdds = toCall / Math.max(1, potBefore + toCall);
@@ -1181,7 +1389,8 @@ function decidePostflop(
     needed *= 1 - impliedDiscount * (0.55 + p.stackReactivity * 0.45);
   }
 
-  let edge = eq - needed;
+  const mathEdge = eq - needed;
+  let edge = mathEdge;
   edge += (p.callDown - 0.5) * 0.055;
   // Position improves realisation only while cards remain; river pot odds are
   // not magically better merely because we act last.
@@ -1190,9 +1399,15 @@ function decidePostflop(
   }
   edge += exploit.valueLean;
   const temperature = difficulty === 'hard' ? 0.038 : 0.048;
-  let continueProbability = sigmoid(edge / temperature);
+  // Mixing belongs to near-indifferent spots. A call that is clearly below the
+  // price (after implied odds) is not a mix but a paid-for leak, so the random
+  // continue probability is truncated to zero outside the indifference band —
+  // tightly on the river where nothing can change, looser with cards to come.
+  const deadZone = street === 'river' ? 0.03 : 0.08;
+  let continueProbability = mathEdge < -deadZone ? 0 : sigmoid(edge / temperature);
   if (directOdds <= 0.15 && eq > 0.17) continueProbability = Math.max(0.86, continueProbability);
   reason.push(`odds=${directOdds.toFixed(2)}`, `edge=${edge.toFixed(2)}`);
+  const evCall = eq * (potBefore + toCall) - toCall;
 
   if (rng() < continueProbability) {
     if (
@@ -1211,7 +1426,7 @@ function decidePostflop(
       rng() < 0.48 + p.aggression * 0.32
     ) {
       const size = nutRange ? valueSize : thinSize;
-      const { amount, allIn } = sizeRaise(
+      const sized = sizeRaise(
         ctx,
         size,
         rng,
@@ -1220,7 +1435,14 @@ function decidePostflop(
         0,
         inPosition ? 2.7 : 3.2,
       );
-      return mk(allIn ? 'allin' : 'raise', amount, rng, false, [...reason, 'value-raise'], true);
+      // A value raise has to beat calling, not merely be profitable: raising
+      // folds out the bluffs we beat and gets called by a stronger slice.
+      const foldEquity = estimateFoldEquity(ctx, exploit, size, features, true);
+      const deltaEV = aggressiveEV(sized, foldEquity) - evCall;
+      if (nutRange || rng() < indifferenceGate(deltaEV)) {
+        return mk(sized.allIn ? 'allin' : 'raise', sized.amount, rng, false, [...reason, 'value-raise'], true);
+      }
+      return mk('call', 0, rng, false, [...reason, 'value-call'], true);
     }
 
     if (mayRaise && hasDraw && features.bluffQuality >= 0.35) {
@@ -1234,18 +1456,9 @@ function decidePostflop(
         0,
         inPosition ? 2.75 : 3.25,
       );
-      if (
-        actionEV(
-          eq,
-          potBefore,
-          sized.heroRisk,
-          foldEquity,
-          sized.callerContribution,
-        ) > 0 &&
-        rng() < bluffFrequency * 0.72
-      ) {
-        const { amount, allIn } = sized;
-        return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'equity-semi-raise'], true);
+      const deltaEV = aggressiveEV(sized, foldEquity) - Math.max(evCall, 0);
+      if (rng() < bluffFrequency * 0.72 * indifferenceGate(deltaEV)) {
+        return mk(sized.allIn ? 'allin' : 'raise', sized.amount, rng, true, [...reason, 'equity-semi-raise'], true);
       }
     }
     return mk('call', 0, rng, false, [...reason, 'equity-call'], true);
@@ -1266,18 +1479,10 @@ function decidePostflop(
       0,
       inPosition ? 2.8 : 3.3,
     );
-    if (
-      actionEV(
-        eq,
-        potBefore,
-        sized.heroRisk,
-        foldEquity,
-        sized.callerContribution,
-      ) > 0 &&
-      rng() < bluffFrequency * 0.35
-    ) {
-      const { amount, allIn } = sized;
-      return mk(allIn ? 'allin' : 'raise', amount, rng, true, [...reason, 'blocker-bluff-raise'], true);
+    // Folding is worth zero; the bluff-raise must compete with that AND the call.
+    const deltaEV = aggressiveEV(sized, foldEquity) - Math.max(evCall, 0);
+    if (rng() < bluffFrequency * 0.35 * indifferenceGate(deltaEV)) {
+      return mk(sized.allIn ? 'allin' : 'raise', sized.amount, rng, true, [...reason, 'blocker-bluff-raise'], true);
     }
   }
 

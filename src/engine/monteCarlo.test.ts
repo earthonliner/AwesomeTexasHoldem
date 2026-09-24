@@ -149,17 +149,18 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
   });
 
   it('capped callers give the hero more equity than uncapped tight opponents', () => {
-    // Vs a bettor + 1 caller: modelling the caller as capped (medium strength)
-    // must credit the hero more equity than assuming both hold top-range hands.
+    // Vs a bettor + 1 caller: modelling the caller as capped (medium strength,
+    // plus a small slow-play share) must credit the hero more equity than
+    // assuming both hold top-range hands.
     const heroCards = hero('Ts Td');
     const board = parseCards('8c 5d 2h');
     const bothTight = estimateEquityVsRange({
-      heroCards, board, opponents: 2, iterations: 3000, rng: seeded(31), rangeFraction: 0.25,
+      heroCards, board, opponents: 2, iterations: 6000, rng: seeded(31), rangeFraction: 0.25,
     });
     const oneCapped = estimateEquityVsRange({
-      heroCards, board, opponents: 2, iterations: 3000, rng: seeded(31), rangeFraction: 0.25, cappedCallers: 1,
+      heroCards, board, opponents: 2, iterations: 6000, rng: seeded(31), rangeFraction: 0.25, cappedCallers: 1,
     });
-    expect(oneCapped.equity).toBeGreaterThan(bothTight.equity + 0.03);
+    expect(oneCapped.equity).toBeGreaterThan(bothTight.equity + 0.02);
   });
 
   it('does not assign the bettor range to opponents still waiting behind', () => {
@@ -183,6 +184,53 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
       unactedOpponents: 2,
     });
     expect(twoBehind.equity).toBeGreaterThan(allTight.equity + 0.08);
+  });
+
+  it('caps opponents who checked, but keeps a trap share in their range', () => {
+    // Top pair on a four-flush river: against two opponents modelled as
+    // "top 54% of the board" it is nearly dead; against two players who both
+    // CHECKED (with nobody holding the initiative) it is a comfortable favourite,
+    // but never as strong as against a range with the traps removed entirely.
+    const heroCards = hero('Kh Jh');
+    const board = parseCards('3s Kc 2s Ts Qs');
+    const asBettors = estimateEquityVsRange({
+      heroCards, board, opponents: 2, iterations: 4000, rng: seeded(41), rangeFraction: 0.54,
+    });
+    const asCheckers = estimateEquityVsRange({
+      heroCards, board, opponents: 2, iterations: 4000, rng: seeded(41), rangeFraction: 0.54,
+      checkedOpponents: 2, checkedCapTier: 0.3,
+    });
+    expect(asBettors.equity).toBeLessThan(0.1);
+    expect(asCheckers.equity).toBeGreaterThan(asBettors.equity + 0.2);
+    expect(asCheckers.equity).toBeLessThan(0.9);
+  });
+
+  it('narrows checked ranges to the share that continues against a bet', () => {
+    const heroCards = hero('Kh Jh');
+    const board = parseCards('3s Kc 2s Ts 4d');
+    const whole = estimateEquityVsRange({
+      heroCards, board, opponents: 1, rangeFraction: 0.54, checkedOpponents: 1, checkedCapTier: 0.3,
+    });
+    const continuing = estimateEquityVsRange({
+      heroCards, board, opponents: 1, rangeFraction: 0.54, checkedOpponents: 1, checkedCapTier: 0.3,
+      continueShare: 0.4,
+    });
+    expect(continuing.equity).toBeLessThan(whole.equity - 0.05);
+  });
+
+  it('enumerates heads-up river ranges exactly, independent of the sampler', () => {
+    const heroCards = hero('Ah Kd');
+    const board = parseCards('Ac 7s 4d 9h 2c');
+    const a = estimateEquityVsRange({
+      heroCards, board, opponents: 1, iterations: 50, rng: seeded(1), rangeFraction: 0.4, bluffShare: 0.3,
+    });
+    const b = estimateEquityVsRange({
+      heroCards, board, opponents: 1, iterations: 5000, rng: seeded(999), rangeFraction: 0.4, bluffShare: 0.3,
+    });
+    expect(a.equity).toBe(b.equity);
+    // At most C(45,2) = 990 combos exist; the enumeration reports how many it scored.
+    expect(a.iterations).toBeGreaterThan(100);
+    expect(a.iterations).toBeLessThanOrEqual(990);
   });
 
   it('chooses a tighter range when facing a large bet', () => {

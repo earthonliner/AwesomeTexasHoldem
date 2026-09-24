@@ -169,6 +169,72 @@ describe('decide - pot odds awareness (postflop)', () => {
   });
 });
 
+describe('EV-gated action selection (hard)', () => {
+  it('never pays off a clearly negative-EV river bet with a hopeless hand', () => {
+    // Bottom of the range facing a pot-sized river bet: calling loses ~one bet
+    // per call. Randomisation belongs to near-indifferent spots only.
+    const hole = parseCards('7c 2d') as [Card, Card];
+    const board = parseCards('Ah Kd Qs Jc 9h');
+    let calls = 0;
+    for (let s = 0; s < 40; s++) {
+      const d = decide({
+        personality: { ...tag, callDown: 0.9 },
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'river',
+          canCheck: false,
+          toCall: 40,
+          potBefore: 80,
+          positionFactor: 1,
+          streetAggressionCount: 1,
+          betToPot: 1,
+        }),
+        rng: seeded(9100 + s),
+        iterations: 200,
+      });
+      if (d.action !== 'fold') calls++;
+    }
+    expect(calls).toBe(0);
+  });
+
+  it('fires a flop c-bet at one final frequency rather than a compounded one', () => {
+    // Pre-flop raiser in position, checked to by one caller, pure air on a dry
+    // board: the c-bet plan is the only roll, so the observed frequency must sit
+    // inside the plan's own band (never the 1 - Π(1 - p_i) of stacked rolls).
+    const hole = parseCards('7c 5d') as [Card, Card];
+    const board = parseCards('Kh 8s 2d');
+    let bets = 0;
+    const n = 120;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board,
+          street: 'flop',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 14,
+          positionFactor: 1,
+          wasAggressorLastStreet: true,
+          inPositionVsAggressor: true,
+          preflopRaised: true,
+          preflopPotType: 'singleRaised',
+        }),
+        rng: seeded(9300 + s),
+        iterations: 120,
+      });
+      if (d.action === 'raise') bets++;
+    }
+    const rate = bets / n;
+    expect(rate).toBeGreaterThan(0.2);
+    expect(rate).toBeLessThan(0.62);
+  });
+});
+
 describe('decide - preflop ranges respond to looseness', () => {
   const hole = parseCards('Ah 5h') as [Card, Card]; // marginal blocker hand
 
@@ -240,6 +306,77 @@ describe('hard preflop expert strategy', () => {
     expect(button22).toBeGreaterThan(60);
     expect(button65s).toBeGreaterThan(45);
     expect(earlyKTo).toBeGreaterThan(60);
+  });
+
+  it('open-jams a 10bb button stack with A5o but folds it from early position', () => {
+    const jamActions = (hand: string, position: 'early' | 'btn', liveOpponents: number) => {
+      const actions: string[] = [];
+      for (let s = 0; s < 30; s++) {
+        actions.push(
+          decide({
+            personality: expert,
+            difficulty: 'hard',
+            ctx: ctx({
+              hole: parseCards(hand) as [Card, Card],
+              position,
+              tableSize: 6,
+              positionFactor: position === 'btn' ? 1 : 0.1,
+              liveOpponents,
+              playersBehind: liveOpponents,
+              stack: 20,
+              effectiveStack: 20,
+              maxRaiseTo: 20,
+              preflopPotType: 'unopened',
+              preflopRaiseCount: 0,
+              currentBet: 2,
+              canRaise: true,
+            }),
+            rng: seeded(12_000 + s),
+          }).action,
+        );
+      }
+      return actions;
+    };
+    expect(jamActions('Ah 5d', 'btn', 2)).toEqual(Array(30).fill('allin'));
+    expect(jamActions('7h 2d', 'btn', 2)).toEqual(Array(30).fill('fold'));
+    expect(jamActions('Ah 5d', 'early', 5)).toEqual(Array(30).fill('fold'));
+    expect(jamActions('Ah Jd', 'early', 5)).toEqual(Array(30).fill('allin'));
+  });
+
+  it('reads a short button jam as much wider than the same jam from early position', () => {
+    // Big blind with A9o facing a 10bb open-jam: the button jams ~half its
+    // hands and gets called; the same wager from early position is respected.
+    const facing = (aggressorPosition: 'btn' | 'early') =>
+      decide({
+        personality: expert,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards('Ah 9d') as [Card, Card],
+          position: 'bb',
+          positionFactor: 0.2,
+          tableSize: 6,
+          liveOpponents: 1,
+          potBefore: 23,
+          toCall: 18,
+          stack: 18,
+          effectiveStack: 18,
+          streetCommitted: 2,
+          totalCommitted: 2,
+          currentBet: 20,
+          maxRaiseTo: 20,
+          canRaise: false,
+          preflopPotType: 'singleRaised',
+          preflopRaiseCount: 1,
+          aggressorPosition,
+          committedOpponents: 1,
+          playersBehind: 0,
+        }),
+        rng: seeded(13_000),
+        iterations: 600,
+      });
+    expect(facing('btn').action).toBe('call');
+    expect(facing('btn').reason).toContain('villR=0.30');
+    expect(facing('early').reason).toContain('villR=0.24');
   });
 
   it('does not call a 100bb open shove with dominated broadways', () => {
@@ -828,7 +965,8 @@ describe('generatePersonality', () => {
 });
 
 describe('hard exploits the observed human style', () => {
-  const marginalHole = parseCards('6c 4c') as [Card, Card];
+  // K7o sits just below a default button open; a steal read should add it.
+  const marginalHole = parseCards('Kc 7d') as [Card, Card];
 
   function stealRaiseRate(withProfile: boolean): number {
     const profile = {
@@ -1022,6 +1160,10 @@ describe('multiway post-flop initiative (hard)', () => {
           liveOpponents: 2,
           positionFactor: 0.7,
           preflopPotType: 'singleRaised',
+          // The pre-flop raiser is checked to by two callers: their checks are
+          // uninformative, so the weak-kicker top pair stays below the value
+          // threshold and must be mixed as a protection bet.
+          wasAggressorLastStreet: true,
         }),
         rng: seeded(7400 + s),
         iterations: 140,
@@ -1176,7 +1318,9 @@ describe('positional & stack-depth play (hard)', () => {
   it('floats: stabs much more when the previous-street aggressor checks to it in position', () => {
     const floatIp = stabRate(true, true);
     const noStory = stabRate(true, false);
-    expect(floatIp).toBeGreaterThan(noStory + 0.15);
+    // Both checks cap the villain's range (the checker model), so the float
+    // story adds a moderate premium on top of the ordinary semi-bluff.
+    expect(floatIp).toBeGreaterThan(noStory + 0.1);
     expect(floatIp).toBeGreaterThan(stabRate(false, true));
   });
 

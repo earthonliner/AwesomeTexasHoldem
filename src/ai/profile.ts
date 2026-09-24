@@ -48,13 +48,27 @@ export interface HandSummary {
   heroFoldedToCbet?: boolean;
   /**
    * Hero bet/raised the river AND the hand reached showdown: records whether
-   * the bet was big (> ~55% pot) and whether the shown hand was weak (lost) —
-   * used for the river-honesty and bet-size-tell reads.
+   * the bet was big (`isBigRiverBet`) and whether the shown hand was weak —
+   * used for the river-honesty and bet-size-tell reads. This is a *shown-weak
+   * bet rate*, not a bluff frequency: successful bluffs are never shown, so the
+   * consumer must treat it as biased evidence and damp its influence.
    */
   riverBetShown?: { big: boolean; weak: boolean } | null;
 }
 
 const AGGRESSIVE = new Set(['bet', 'raise', 'allin']);
+
+/**
+ * Single bet-size classification shared by profile recording and by the reads
+ * that consume it: a river wager above this fraction of the pot before the bet
+ * is "big". Recording and reading used to disagree (0.55 vs 0.70), so a 0.6-pot
+ * bet was stored in the big bucket but read with the small-bet profile.
+ */
+export const RIVER_BIG_BET_TO_POT = 0.55;
+
+export function isBigRiverBet(betToPot: number): boolean {
+  return betToPot > RIVER_BIG_BET_TO_POT;
+}
 
 /**
  * Build an observation summary for any human seat. Shared by local play and
@@ -126,8 +140,13 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
       // (high card or playing the board) as weak evidence.
       const weak =
         playerHand.category === HandCategory.HighCard || playerHand.score === boardHand.score;
-      const wager = riverBet.chipsPutIn ?? riverBet.amount;
-      const big = wager > Math.max(1, riverBet.potBefore) * 0.55;
+      // Same wager definition as `deriveLineContext.betToPot`, so the recorded
+      // bucket is the one the decision layer later reads.
+      const wager =
+        riverBet.raiseBy && riverBet.raiseBy > 0
+          ? riverBet.raiseBy
+          : (riverBet.chipsPutIn ?? riverBet.amount);
+      const big = isBigRiverBet(wager / Math.max(1, riverBet.potBefore));
       riverBetShown = { big, weak };
     }
   }
