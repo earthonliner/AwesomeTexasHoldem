@@ -149,17 +149,18 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
   });
 
   it('capped callers give the hero more equity than uncapped tight opponents', () => {
-    // Vs a bettor + 1 caller: modelling the caller as capped (medium strength)
-    // must credit the hero more equity than assuming both hold top-range hands.
+    // Vs a bettor + 1 caller: modelling the caller as capped (medium strength,
+    // plus a small slow-play share) must credit the hero more equity than
+    // assuming both hold top-range hands.
     const heroCards = hero('Ts Td');
     const board = parseCards('8c 5d 2h');
     const bothTight = estimateEquityVsRange({
-      heroCards, board, opponents: 2, iterations: 3000, rng: seeded(31), rangeFraction: 0.25,
+      heroCards, board, opponents: 2, iterations: 6000, rng: seeded(31), rangeFraction: 0.25,
     });
     const oneCapped = estimateEquityVsRange({
-      heroCards, board, opponents: 2, iterations: 3000, rng: seeded(31), rangeFraction: 0.25, cappedCallers: 1,
+      heroCards, board, opponents: 2, iterations: 6000, rng: seeded(31), rangeFraction: 0.25, cappedCallers: 1,
     });
-    expect(oneCapped.equity).toBeGreaterThan(bothTight.equity + 0.03);
+    expect(oneCapped.equity).toBeGreaterThan(bothTight.equity + 0.02);
   });
 
   it('does not assign the bettor range to opponents still waiting behind', () => {

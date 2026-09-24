@@ -1,7 +1,7 @@
 import type { Card } from './types';
 import { makeDeck, shuffle, cardId, type Rng, defaultRng } from './deck';
 import { evaluateHand } from './handEvaluator';
-import { preflopPercentile, preflopScore } from './preflopStrength';
+import { preflopAllInScore, preflopPercentile, preflopScore } from './preflopStrength';
 
 export interface EquityResult {
   /** Probability the hero strictly wins. */
@@ -173,11 +173,41 @@ export interface RangeEquityOptions {
    */
   unactedOpponents?: number;
   /**
+   * Opponents who have CHECKED on this street while nobody has bet. A check is
+   * evidence, not a seal: it removes most of the top `checkedCapTier` of the
+   * range (the hands that would have bet), while CHECKER_SLOWPLAY_SHARE of a
+   * checker's range is still a strong hand that checked to trap or to keep the
+   * pot small multiway.
+   */
+  checkedOpponents?: number;
+  /**
+   * Share (0..1) of the range, ranked by current strength, that a checker is
+   * assumed to have bet with instead of checking. Small when the check was made
+   * to the previous street's aggressor (callers check almost everything to the
+   * raiser), larger when nobody had the initiative.
+   */
+  checkedCapTier?: number;
+  /**
+   * Only the strongest `continueShare` (0..1) of each checked/unacted range
+   * continues against the hero's bet; slow-played strong hands always do. The
+   * value range is narrowed by the caller through `rangeFraction`.
+   */
+  continueShare?: number;
+  /**
    * Pre-flop combinations still plausible after the observed pre-flop line.
    * A 3-bet pot can pass ~0.12, while a limped pot can pass ~0.7.
    */
   preflopRangeFraction?: number;
+  /**
+   * Which pre-flop ordering ranks the opponent's combos before the flop.
+   * 'playability' (default) models opening/defending ranges; 'allin' models
+   * shove and re-shove ranges, where raw equity matters and suited connectors
+   * do not.
+   */
+  preflopRanking?: PreflopRanking;
 }
+
+export type PreflopRanking = 'playability' | 'allin';
 
 export interface RangeEquityResult extends EquityResult {
   /** Number of two-card combos in the assumed value range. */
@@ -261,16 +291,74 @@ function bluffCandidateScore(a: Card, b: Card, board: Card[]): number {
   return blockers - made.category * 35;
 }
 
+/** Share of a passive caller's range that is a slow-played strong hand. */
+export const CALLER_SLOWPLAY_SHARE = 0.15;
+/** Share of a checker's range that is a strong hand checked to trap or pot-control. */
+export const CHECKER_SLOWPLAY_SHARE = 0.2;
+/** Default share of a range that bets rather than checks when nobody has the initiative. */
+export const DEFAULT_CHECKED_CAP_TIER = 0.34;
+
+interface WeightedPool {
+  pool: [Card, Card][];
+  weight: number;
+}
+
+/**
+ * Exact weighted showdown result of the hero against one opponent whose range
+ * is the union of uniform pools (value, bluffs, ...). Only valid once the board
+ * is complete; at most C(45,2)=990 combos are evaluated.
+ */
+function exactRiverHeadsUp(
+  heroCards: [Card, Card],
+  board: Card[],
+  pools: WeightedPool[],
+): EquityResult {
+  const heroScore = evaluateHand([...heroCards, ...board]).score;
+  const scoreCache = new Map<number, number>();
+  let win = 0;
+  let tie = 0;
+  let lose = 0;
+  let totalWeight = 0;
+  let evaluated = 0;
+  for (const { pool, weight } of pools) {
+    if (pool.length === 0 || weight <= 0) continue;
+    const perCombo = weight / pool.length;
+    for (const combo of pool) {
+      const key = cardId(combo[0]) * 64 + cardId(combo[1]);
+      let score = scoreCache.get(key);
+      if (score === undefined) {
+        score = evaluateHand([...combo, ...board]).score;
+        scoreCache.set(key, score);
+      }
+      evaluated++;
+      totalWeight += perCombo;
+      if (heroScore > score) win += perCombo;
+      else if (heroScore === score) tie += perCombo;
+      else lose += perCombo;
+    }
+  }
+  if (totalWeight <= 0) return { win: 0, tie: 0, lose: 0, equity: 0, iterations: 0 };
+  win /= totalWeight;
+  tie /= totalWeight;
+  lose /= totalWeight;
+  return { win, tie, lose, equity: win + tie / 2, iterations: evaluated };
+}
+
 /**
  * Ranking ~1,000 candidate holdings is much more expensive than sampling them.
  * The ranking depends on the board, not on the hero's cards or inferred range,
  * so keep a small LRU and apply those cheap filters per decision.
  */
-function rankedCombosForBoard(board: Card[]): RankedCombo[] {
-  const key = board
-    .map(cardId)
-    .sort((a, b) => a - b)
-    .join(',');
+function rankedCombosForBoard(
+  board: Card[],
+  preflopRanking: PreflopRanking = 'playability',
+): RankedCombo[] {
+  const key =
+    (board.length < 3 ? `${preflopRanking}:` : '') +
+    board
+      .map(cardId)
+      .sort((a, b) => a - b)
+      .join(',');
   const cached = boardComboCache.get(key);
   if (cached) {
     boardComboCache.delete(key);
@@ -286,9 +374,12 @@ function rankedCombosForBoard(board: Card[]): RankedCombo[] {
       const b = available[j];
       combos.push({
         cards: [a, b],
-        score: board.length >= 3
-          ? postflopRangeScore(a, b, board)
-          : preflopScore(a, b),
+        score:
+          board.length >= 3
+            ? postflopRangeScore(a, b, board)
+            : preflopRanking === 'allin'
+              ? preflopAllInScore(a, b)
+              : preflopScore(a, b),
         preflopPercentile: preflopPercentile(a, b),
       });
     }
@@ -332,15 +423,17 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   // The pre-flop filter carries the earlier action line into later streets
   // instead of rebuilding a range from the board alone.
   const heroIds = new Set(heroCards.map(cardId));
-  const combos = rankedCombosForBoard(board).filter(
+  const combos = rankedCombosForBoard(board, opts.preflopRanking).filter(
     (combo) =>
       !heroIds.has(cardId(combo.cards[0])) &&
       !heroIds.has(cardId(combo.cards[1])) &&
       combo.preflopPercentile >= 1 - preflopRangeFraction,
   );
 
-  // Value range: the strongest `rangeFraction` of combos.
-  const floor = Math.min(combos.length, Math.max(opponentCount * 6, 12));
+  // Value range: the strongest `rangeFraction` of combos. The floor only keeps
+  // the sampler alive multiway (it draws with replacement); it must not widen a
+  // genuinely tight range by dozens of extra combos.
+  const floor = Math.min(combos.length, Math.max(opponentCount * 3, 6));
   const wanted = Math.round(rangeFraction * combos.length);
   const valueCount = Math.min(combos.length, Math.max(floor, wanted));
   const valuePool = combos.slice(0, valueCount).map((c) => c.cards);
@@ -360,53 +453,107 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     }
   }
 
-  // Caller range: capped just below the raising range (their nut combos would
-  // have raised, so callers hold medium-strength hands).
+  // Opponent roles, in sampling order: bettor(s) from the value/bluff range,
+  // then capped callers, then checkers, then players still to act.
   const unactedOpponents = Math.min(
     Math.max(0, opts.unactedOpponents ?? 0),
     opponentCount,
   );
+  const checkedOpponents = Math.min(
+    Math.max(0, opts.checkedOpponents ?? 0),
+    opponentCount - unactedOpponents,
+  );
+  // Callers only exist next to a bettor, so at least one value seat remains.
   const cappedCallers = Math.min(
     Math.max(0, opts.cappedCallers ?? 0),
-    Math.max(0, opponentCount - unactedOpponents - 1),
+    Math.max(0, opponentCount - unactedOpponents - checkedOpponents - 1),
   );
+  const continueShare = Math.min(1, Math.max(0.05, opts.continueShare ?? 1));
+  const topSlice = (pool: [Card, Card][], share: number): [Card, Card][] =>
+    share >= 1 ? pool : pool.slice(0, Math.max(1, Math.round(pool.length * share)));
+
+  // Caller range: capped just below the raising range (their nut combos would
+  // have raised, so callers hold medium-strength hands).
   let callerPool: [Card, Card][] = [];
   if (cappedCallers > 0) {
     const span = Math.max(opponentCount * 6, Math.round(0.35 * combos.length));
     callerPool = combos.slice(valueCount, Math.min(combos.length, valueCount + span)).map((c) => c.cards);
     if (callerPool.length === 0) callerPool = valuePool;
   }
-  const unactedPool = combos.map((combo) => combo.cards);
+  const fullPool = combos.map((combo) => combo.cards);
+  const unactedPool = topSlice(fullPool, continueShare);
+
+  // Checker range: everything below the tier that would have bet, plus a
+  // slow-play share drawn from that tier. Against a bet only the top
+  // `continueShare` of the weak part continues, while the traps always do, so
+  // the trap weight grows accordingly.
+  let checkedPool: [Card, Card][] = [];
+  let trapPool: [Card, Card][] = [];
+  let trapWeight = 0;
+  if (checkedOpponents > 0) {
+    const tier = Math.min(0.9, Math.max(0, opts.checkedCapTier ?? DEFAULT_CHECKED_CAP_TIER));
+    const tierCount = Math.min(combos.length - 1, Math.round(tier * combos.length));
+    trapPool = fullPool.slice(0, Math.max(1, tierCount));
+    checkedPool = topSlice(fullPool.slice(tierCount), continueShare);
+    if (checkedPool.length === 0) checkedPool = trapPool;
+    trapWeight =
+      CHECKER_SLOWPLAY_SHARE /
+      (CHECKER_SLOWPLAY_SHARE + (1 - CHECKER_SLOWPLAY_SHARE) * continueShare);
+  }
 
   const knownIds = known.map(cardId);
+
+  // Heads-up on the river nothing is random any more: enumerate the weighted
+  // range exactly instead of sampling it with ±1.7% noise.
+  if (board.length === 5 && opponentCount === 1) {
+    const pools: WeightedPool[] =
+      unactedOpponents > 0
+        ? [{ pool: unactedPool, weight: 1 }]
+        : checkedOpponents > 0
+          ? [
+              { pool: trapPool, weight: trapWeight },
+              { pool: checkedPool, weight: 1 - trapWeight },
+            ]
+          : [
+              { pool: valuePool, weight: 1 - bluffShare },
+              { pool: bluffPool, weight: bluffPool.length > 0 ? bluffShare : 0 },
+            ];
+    const exact = exactRiverHeadsUp(heroCards, board, pools);
+    return { ...exact, rangeCombos: valueCount };
+  }
 
   let wins = 0;
   let ties = 0;
   let losses = 0;
   let equitySum = 0;
 
-  const drawFrom = (pool: [Card, Card][], usedIds: Set<number>): [Card, Card] => {
+  const drawFrom = (
+    pool: [Card, Card][],
+    usedIds: Set<number>,
+    fallback: 'top' | 'bottom',
+  ): [Card, Card] => {
+    const take = (pick: [Card, Card]): [Card, Card] => {
+      usedIds.add(cardId(pick[0]));
+      usedIds.add(cardId(pick[1]));
+      return pick;
+    };
+    const fits = (pick: [Card, Card]) =>
+      !usedIds.has(cardId(pick[0])) && !usedIds.has(cardId(pick[1]));
     for (let attempt = 0; pool.length > 0 && attempt < 16; attempt++) {
       const pick = pool[Math.floor(rng() * pool.length)];
-      const id1 = cardId(pick[0]);
-      const id2 = cardId(pick[1]);
-      if (!usedIds.has(id1) && !usedIds.has(id2)) {
-        usedIds.add(id1);
-        usedIds.add(id2);
-        return pick;
-      }
+      if (fits(pick)) return take(pick);
     }
-    // Fallback: any two unused cards (avoid dropping iterations on collisions).
-    const free = remaining.filter((c) => !usedIds.has(cardId(c)));
-    if (free.length < 2) {
-      throw new RangeError('Not enough cards left to sample an opponent hand');
-    }
-    const a = free[Math.floor(rng() * free.length)];
-    const b = free.filter((c) => cardId(c) !== cardId(a))[Math.floor(rng() * (free.length - 1))];
-    usedIds.add(cardId(a));
-    usedIds.add(cardId(b));
-    return [a, b];
+    // Card collisions in a tight multiway pool: fall back to the nearest combo
+    // in the same ordering, never to two random cards that widen the range.
+    for (const pick of pool) if (fits(pick)) return take(pick);
+    const ordered = fallback === 'top' ? fullPool : [...fullPool].reverse();
+    for (const pick of ordered) if (fits(pick)) return take(pick);
+    throw new RangeError('Not enough cards left to sample an opponent hand');
   };
+
+  const firstUnacted = opponentCount - unactedOpponents;
+  const firstChecked = firstUnacted - checkedOpponents;
+  const firstCaller = firstChecked - cappedCallers;
 
   for (let iter = 0; iter < iterations; iter++) {
     const usedIds = new Set<number>(knownIds);
@@ -415,17 +562,27 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     for (let o = 0; o < opponentCount; o++) {
       // Players behind have taken no post-flop action, so retain their broad
       // pre-flop range instead of being mistaken for additional bettors.
-      if (o >= opponentCount - unactedOpponents) {
-        oppHands.push(drawFrom(unactedPool, usedIds));
+      if (o >= firstUnacted) {
+        oppHands.push(drawFrom(unactedPool, usedIds, 'top'));
         continue;
       }
-      // The last `cappedCallers` opponents are passive callers with capped ranges.
-      if (o >= opponentCount - unactedOpponents - cappedCallers) {
-        oppHands.push(drawFrom(callerPool, usedIds));
+      // Checkers hold the weak part of their range plus the occasional trap.
+      if (o >= firstChecked) {
+        const trap = rng() < trapWeight;
+        oppHands.push(drawFrom(trap ? trapPool : checkedPool, usedIds, 'bottom'));
+        continue;
+      }
+      // The last `cappedCallers` opponents are passive callers. Their range is
+      // capped, not sealed: a share of slow-played monsters stays in it.
+      if (o >= firstCaller) {
+        const slowPlay = rng() < CALLER_SLOWPLAY_SHARE;
+        oppHands.push(drawFrom(slowPlay ? valuePool : callerPool, usedIds, 'top'));
         continue;
       }
       const useBluff = bluffShare > 0 && bluffPool.length > 0 && rng() < bluffShare;
-      oppHands.push(drawFrom(useBluff ? bluffPool : valuePool, usedIds));
+      oppHands.push(
+        useBluff ? drawFrom(bluffPool, usedIds, 'bottom') : drawFrom(valuePool, usedIds, 'top'),
+      );
     }
 
     const pool = remaining.filter((c) => !usedIds.has(cardId(c)));
