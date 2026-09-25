@@ -16,9 +16,9 @@ const SUIT_COLOR: Record<Suit, string> = {
 };
 
 const SIZES = {
-  sm: 'h-12 w-9 text-sm rounded-md',
-  md: 'h-16 w-12 text-base rounded-lg',
-  lg: 'h-24 w-[4.5rem] text-2xl rounded-xl',
+  sm: 'playing-card-sm h-12 w-9 text-sm rounded-md',
+  md: 'playing-card-md h-16 w-12 text-base rounded-lg',
+  lg: 'playing-card-lg h-24 w-[4.5rem] text-2xl rounded-xl',
 };
 
 interface Props {
@@ -35,7 +35,7 @@ export function PlayingCard({ card, faceDown, size = 'md', dealt, className = ''
   if (faceDown || !card) {
     return (
       <div
-        className={`${sizeClass} ${dealt ? 'animate-dealIn' : ''} flex items-center justify-center border border-blue-900/60 bg-gradient-to-br from-blue-700 to-blue-900 shadow-md ${className}`}
+        className={`playing-card ${sizeClass} ${dealt ? 'animate-dealIn' : ''} flex items-center justify-center border border-blue-900/60 bg-gradient-to-br from-blue-700 to-blue-900 shadow-md ${className}`}
         aria-label="暗牌"
       >
         <div className="h-3/4 w-3/4 rounded-md border border-blue-400/40 bg-[repeating-linear-gradient(45deg,rgba(255,255,255,0.08)_0,rgba(255,255,255,0.08)_3px,transparent_3px,transparent_6px)]" />
@@ -46,7 +46,7 @@ export function PlayingCard({ card, faceDown, size = 'md', dealt, className = ''
   const color = SUIT_COLOR[card.suit];
   return (
     <div
-      className={`${sizeClass} ${dealt ? 'animate-flipIn' : ''} relative flex flex-col justify-between bg-white p-1 font-semibold shadow-lg ring-1 ring-black/10 ${className}`}
+      className={`playing-card ${sizeClass} ${dealt ? 'animate-flipIn' : ''} relative flex flex-col justify-between bg-white p-1 font-semibold shadow-lg ring-1 ring-black/10 ${className}`}
       aria-label={`${RANK_LABEL[card.rank]}${SUIT_GLYPH[card.suit]}`}
     >
       <div className={`flex items-center gap-0.5 leading-none ${color}`}>
