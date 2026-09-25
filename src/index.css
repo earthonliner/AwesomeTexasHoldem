@@ -98,11 +98,14 @@ body {
   }
 
   .game-layout {
-    display: block;
+    display: flex;
+    flex: 1 1 0;
+    overflow: hidden;
   }
 
   .table-column {
-    height: calc(100% - 31px);
+    height: auto;
+    flex: 1 1 0;
     gap: 4px;
   }
 
