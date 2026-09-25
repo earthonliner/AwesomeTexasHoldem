@@ -107,45 +107,45 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
   const lastHand = handOver && history.length > 0 ? history[history.length - 1] : null;
 
   return (
-    <div className="mx-auto flex min-h-full max-w-7xl flex-col px-3 py-3">
+    <div className="game-view mx-auto flex min-h-full max-w-7xl flex-col px-3 py-3">
       {/* Header */}
-      <header className="mb-3 flex flex-wrap items-center gap-2">
-        <h1 className="text-xl font-bold text-amber-300">德州扑克练习</h1>
-        <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
+      <header className="game-header mb-3 flex flex-wrap items-center gap-2">
+        <h1 className="game-title text-xl font-bold text-amber-300">德州扑克练习</h1>
+        <span className="game-meta rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
           {settings.seatCount} 人 · 大盲 {settings.blindLevel} · 难度{' '}
           {{ easy: '简单', medium: '中等', hard: '困难' }[settings.difficulty]}
         </span>
-        <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">第 {game.handNumber} 手</span>
-        <div className="ml-auto flex items-center gap-2">
+        <span className="game-meta rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">第 {game.handNumber} 手</span>
+        <div className="game-tools ml-auto flex items-center gap-2">
           <button
             onClick={onOpenDocs}
-            className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
+            className="game-tool game-tool-secondary rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
             title="教学文档"
           >
             📖 文档
           </button>
           <button
             onClick={() => updateSettings({ sound: !settings.sound })}
-            className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
+            className="game-tool rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
             title="静音切换"
           >
             {settings.sound ? '🔊' : '🔇'}
           </button>
           <button
             onClick={() => setShowSettings((v) => !v)}
-            className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
+            className="game-tool game-tool-secondary rounded-lg bg-slate-800 px-3 py-1.5 text-sm hover:bg-slate-700"
           >
             ⚙️ 设置
           </button>
-          <button onClick={newTable} className="rounded-lg bg-rose-800 px-3 py-1.5 text-sm hover:bg-rose-700">
+          <button onClick={newTable} className="game-tool rounded-lg bg-rose-800 px-3 py-1.5 text-sm hover:bg-rose-700">
             换桌
           </button>
         </div>
       </header>
 
-      <div className="grid flex-1 grid-cols-1 gap-3 lg:grid-cols-[1fr_22rem]">
+      <div className="game-layout grid flex-1 grid-cols-1 gap-3 lg:grid-cols-[1fr_22rem]">
         {/* Table + actions */}
-        <div className="flex flex-col gap-3">
+        <div className="table-column flex flex-col gap-3">
           <PokerTable
             game={game}
             thinkingId={thinkingId}
@@ -180,7 +180,7 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
         </div>
 
         {/* Sidebar */}
-        <aside className="flex flex-col gap-3">
+        <aside className="game-sidebar flex flex-col gap-3">
           {showSettings && (
             <div className="rounded-xl bg-slate-900/80 p-4 ring-1 ring-slate-700">
               <SettingsPanel settings={settings} onChange={updateSettings} showTableNote />

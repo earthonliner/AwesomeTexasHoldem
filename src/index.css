@@ -29,3 +29,307 @@ body {
   background: rgba(148, 163, 184, 0.4);
   border-radius: 4px;
 }
+
+/*
+ * Phone landscape is height-constrained, not width-constrained. Keep the felt,
+ * every seat and the primary actions in one viewport; secondary panels remain
+ * available on tablet/desktop where there is enough vertical room.
+ */
+@media (orientation: landscape) and (max-height: 540px) {
+  body {
+    overflow: hidden;
+  }
+
+  .game-view {
+    box-sizing: border-box;
+    height: 100dvh;
+    min-height: 0;
+    max-width: none;
+    padding:
+      max(4px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right))
+      max(4px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
+  }
+
+  .game-header {
+    min-height: 28px;
+    margin-bottom: 3px;
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+
+  .game-title {
+    flex: 0 0 auto;
+    font-size: 14px;
+    line-height: 20px;
+    white-space: nowrap;
+  }
+
+  .game-meta {
+    flex: 0 1 auto;
+    overflow: hidden;
+    padding: 3px 7px;
+    font-size: 10px;
+    line-height: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .game-tools {
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+
+  .game-tool {
+    min-height: 28px;
+    padding: 3px 8px;
+    font-size: 11px;
+    line-height: 18px;
+  }
+
+  .game-tool-secondary {
+    display: none;
+  }
+
+  .game-layout,
+  .table-column {
+    min-height: 0;
+  }
+
+  .game-layout {
+    display: block;
+  }
+
+  .table-column {
+    height: calc(100% - 31px);
+    gap: 4px;
+  }
+
+  .game-sidebar {
+    display: none;
+  }
+
+  .poker-table {
+    min-height: 0;
+    max-width: none;
+    flex: 1 1 auto;
+    aspect-ratio: auto;
+  }
+
+  .poker-felt {
+    inset: 3% 4%;
+    border-width: 4px;
+    box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.55);
+  }
+
+  .seat-position {
+    top: var(--mobile-seat-y) !important;
+  }
+
+  .table-center {
+    top: 49%;
+    gap: 3px;
+  }
+
+  .pot-label {
+    padding: 1px 8px;
+    font-size: 10px;
+    line-height: 16px;
+  }
+
+  .community-cards {
+    gap: 3px;
+  }
+
+  .community-card-slot,
+  .community-cards .playing-card-lg {
+    width: 40px;
+    height: 54px;
+    border-radius: 6px;
+    font-size: 12px;
+  }
+
+  .playing-card {
+    padding: 2px;
+  }
+
+  .playing-card > div:nth-child(2) {
+    font-size: 15px;
+  }
+
+  .poker-seat {
+    width: 82px;
+  }
+
+  .seat-cards {
+    margin-bottom: 2px;
+    gap: 2px;
+  }
+
+  .seat-card-placeholder {
+    height: 34px;
+  }
+
+  .seat-cards .playing-card-sm {
+    width: 25px;
+    height: 34px;
+    border-radius: 4px;
+    font-size: 9px;
+  }
+
+  .seat-cards .playing-card-md {
+    width: 31px;
+    height: 42px;
+    border-radius: 5px;
+    font-size: 10px;
+  }
+
+  .seat-info {
+    border-radius: 7px;
+    padding: 1px 3px;
+    line-height: 1.05;
+  }
+
+  .seat-name,
+  .seat-stack {
+    font-size: 10px;
+    line-height: 13px;
+  }
+
+  .seat-net {
+    font-size: 8px;
+    line-height: 10px;
+  }
+
+  .seat-thinking {
+    font-size: 9px;
+    line-height: 11px;
+  }
+
+  .seat-bet {
+    margin-top: 2px;
+    padding: 0 5px;
+    font-size: 9px;
+    line-height: 14px;
+  }
+
+  .seat-badge {
+    right: -2px;
+    padding: 0 3px;
+    font-size: 8px;
+    line-height: 13px;
+  }
+
+  .seat-button {
+    right: -2px;
+    bottom: -7px;
+    height: 18px;
+    padding: 0 5px;
+    font-size: 8px;
+    line-height: 18px;
+    box-shadow: none;
+    --tw-ring-offset-shadow: none;
+    --tw-ring-shadow: none;
+  }
+
+  .seat-button-dealer {
+    right: auto;
+    left: -2px;
+    width: 18px;
+    padding: 0;
+    font-size: 9px;
+  }
+
+  .seat-hud {
+    display: none;
+  }
+
+  .action-bar {
+    flex: 0 0 auto;
+    padding: 5px 7px;
+    border-radius: 9px;
+  }
+
+  .action-bar-waiting {
+    height: 48px;
+    font-size: 12px;
+  }
+
+  .action-meta {
+    min-height: 14px;
+    margin-bottom: 3px;
+    gap: 6px;
+    font-size: 10px;
+    line-height: 14px;
+  }
+
+  .action-shortcuts {
+    display: none;
+  }
+
+  .raise-controls {
+    display: grid;
+    grid-template-columns: minmax(130px, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 4px;
+  }
+
+  .raise-slider {
+    min-width: 0;
+    margin-bottom: 0;
+  }
+
+  .raise-slider input {
+    height: 6px;
+  }
+
+  .raise-slider span {
+    width: 48px;
+    font-size: 10px;
+  }
+
+  .quick-actions {
+    flex-wrap: nowrap;
+    gap: 3px;
+  }
+
+  .quick-action {
+    min-height: 24px;
+    padding: 2px 6px;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  .primary-actions {
+    gap: 5px;
+  }
+
+  .primary-action {
+    min-height: 40px;
+    padding: 5px 4px;
+    font-size: 13px;
+    line-height: 16px;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 540px) and (max-width: 650px) {
+  .game-title {
+    display: none;
+  }
+
+  .game-tool {
+    padding-inline: 6px;
+  }
+
+  .quick-action {
+    padding-inline: 4px;
+    font-size: 9px;
+  }
+
+  .raise-controls {
+    grid-template-columns: minmax(110px, 1fr) auto;
+    gap: 4px;
+  }
+}

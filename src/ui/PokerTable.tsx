@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import type { GameState } from '../engine/gameTypes';
 import type { OpponentStat } from '../store/types';
 import { Seat } from './Seat';
@@ -31,15 +32,15 @@ export function PokerTable({ game, thinkingId, showHud, opponentStats, resultTex
   const pot = totalPot(game);
 
   return (
-    <div className="relative mx-auto aspect-[16/10] w-full max-w-5xl">
+    <div className="poker-table relative mx-auto aspect-[16/10] w-full max-w-5xl">
       {/* Felt */}
-      <div className="absolute inset-[6%] rounded-[48%] border-8 border-amber-950/70 bg-felt shadow-[inset_0_0_80px_rgba(0,0,0,0.6)]">
+      <div className="poker-felt absolute inset-[6%] rounded-[48%] border-8 border-amber-950/70 bg-felt shadow-[inset_0_0_80px_rgba(0,0,0,0.6)]">
         <div className="absolute inset-4 rounded-[48%] border border-white/10" />
       </div>
 
       {/* Center: board + pot */}
-      <div className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3">
-        <div className="rounded-full bg-black/40 px-4 py-1 font-mono text-sm text-amber-200 ring-1 ring-amber-500/30">
+      <div className="table-center absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3">
+        <div className="pot-label rounded-full bg-black/40 px-4 py-1 font-mono text-sm text-amber-200 ring-1 ring-amber-500/30">
           底池 {formatBB(pot)}
         </div>
         <CommunityCards board={game.board} />
@@ -56,8 +57,12 @@ export function PokerTable({ game, thinkingId, showHud, opponentStats, resultTex
         return (
           <div
             key={player.id}
-            className="absolute -translate-x-1/2 -translate-y-1/2"
-            style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+            className="seat-position absolute -translate-x-1/2 -translate-y-1/2"
+            style={{
+              left: `${pos.x}%`,
+              top: `${pos.y}%`,
+              '--mobile-seat-y': `${50 + Math.sin(Math.PI / 2 + (idx / game.players.length) * Math.PI * 2) * 32}%`,
+            } as CSSProperties}
           >
             <Seat
               player={player}

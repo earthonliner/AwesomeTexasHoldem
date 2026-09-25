@@ -95,7 +95,7 @@ export function ActionBar({ game, onAct }: Props) {
 
   if (!isHeroTurn || !legal || !hero) {
     return (
-      <div className="flex h-28 items-center justify-center rounded-xl bg-slate-900/60 text-slate-400">
+      <div className="action-bar action-bar-waiting flex h-28 items-center justify-center rounded-xl bg-slate-900/60 text-slate-400">
         {game.status === 'complete' ? '本手结束，准备下一手…' : '等待其他玩家行动…'}
       </div>
     );
@@ -105,16 +105,16 @@ export function ActionBar({ game, onAct }: Props) {
   const isAllInRaise = raiseTo >= legal.maxRaiseTo;
 
   return (
-    <div className="rounded-xl bg-slate-900/80 p-3 shadow-lg ring-1 ring-slate-700">
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+    <div className="action-bar rounded-xl bg-slate-900/80 p-3 shadow-lg ring-1 ring-slate-700">
+      <div className="action-meta mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
         <span>底池 {formatBB(pot)}</span>
         {toCall > 0 && <span className="text-amber-300">需跟 {formatBB(toCall)}</span>}
-        <span className="ml-auto text-slate-500">快捷键: F 弃 / C 过·跟 / R 加 / A 全下 / ↑↓ 调整</span>
+        <span className="action-shortcuts ml-auto text-slate-500">快捷键: F 弃 / C 过·跟 / R 加 / A 全下 / ↑↓ 调整</span>
       </div>
 
       {canAggress && (
-        <div className="mb-3">
-          <div className="mb-1 flex items-center gap-2">
+        <div className="raise-controls mb-3">
+          <div className="raise-slider mb-1 flex items-center gap-2">
             <input
               type="range"
               min={legal.minRaiseTo}
@@ -126,7 +126,7 @@ export function ActionBar({ game, onAct }: Props) {
             />
             <span className="w-24 text-right font-mono text-sm text-amber-300">{formatBB(raiseTo)}</span>
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="quick-actions flex flex-wrap gap-1.5">
             <QuickBtn label="1/2 池" onClick={() => setFractionOfPot(0.5)} />
             <QuickBtn label="3/4 池" onClick={() => setFractionOfPot(0.75)} />
             <QuickBtn label="底池" onClick={() => setFractionOfPot(1)} />
@@ -137,23 +137,23 @@ export function ActionBar({ game, onAct }: Props) {
         </div>
       )}
 
-      <div className="flex gap-2">
+      <div className="primary-actions flex gap-2">
         <button
           onClick={doFold}
-          className="flex-1 rounded-lg bg-rose-700 py-3 font-semibold text-white transition hover:bg-rose-600 active:scale-95"
+          className="primary-action flex-1 rounded-lg bg-rose-700 py-3 font-semibold text-white transition hover:bg-rose-600 active:scale-95"
         >
           弃牌 <span className="opacity-60">(F)</span>
         </button>
         <button
           onClick={doCheckCall}
-          className="flex-1 rounded-lg bg-emerald-700 py-3 font-semibold text-white transition hover:bg-emerald-600 active:scale-95"
+          className="primary-action flex-1 rounded-lg bg-emerald-700 py-3 font-semibold text-white transition hover:bg-emerald-600 active:scale-95"
         >
           {legal.canCheck ? '过牌' : `跟注 ${formatBB(toCall)}`} <span className="opacity-60">(C)</span>
         </button>
         {canAggress && (
           <button
             onClick={doRaise}
-            className={`flex-1 rounded-lg py-3 font-semibold text-white transition active:scale-95 ${
+            className={`primary-action flex-1 rounded-lg py-3 font-semibold text-white transition active:scale-95 ${
               confirmAllIn && isAllInRaise ? 'animate-pulse bg-red-600' : 'bg-amber-600 hover:bg-amber-500'
             }`}
           >
@@ -174,7 +174,7 @@ function QuickBtn({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="rounded-md bg-slate-700 px-2.5 py-1 text-xs text-slate-200 transition hover:bg-slate-600 active:scale-95"
+      className="quick-action rounded-md bg-slate-700 px-2.5 py-1 text-xs text-slate-200 transition hover:bg-slate-600 active:scale-95"
     >
       {label}
     </button>

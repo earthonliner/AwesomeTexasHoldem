@@ -33,57 +33,57 @@ export function Seat({ player, isButton, isActive, isThinking, revealed, showHud
   const showCards = player.isHero || revealed;
 
   return (
-    <div className={`relative flex w-32 flex-col items-center ${dimmed ? 'opacity-50' : ''}`}>
+    <div className={`poker-seat relative flex w-32 flex-col items-center ${dimmed ? 'opacity-50' : ''}`}>
       {/* Hole cards */}
-      <div className="mb-1 flex gap-1">
+      <div className="seat-cards mb-1 flex gap-1">
         {player.hole.length > 0 ? (
           player.hole.map((c, i) => (
             <PlayingCard key={i} card={showCards ? c : null} faceDown={!showCards} size={player.isHero ? 'md' : 'sm'} />
           ))
         ) : (
-          <div className="h-12" />
+          <div className="seat-card-placeholder h-12" />
         )}
       </div>
 
       <div
-        className={`w-full rounded-xl border px-2 py-1 text-center shadow-lg transition ${
+        className={`seat-info w-full rounded-xl border px-2 py-1 text-center shadow-lg transition ${
           isActive
             ? 'border-yellow-400 bg-slate-800/95 animate-pulseRing'
             : 'border-slate-700 bg-slate-800/80'
         }`}
       >
-        <div className="flex items-center justify-center gap-1 text-sm font-semibold text-slate-100">
+        <div className="seat-name flex items-center justify-center gap-1 text-sm font-semibold text-slate-100">
           {player.isHero && <span className="text-emerald-400">★</span>}
           <span className="truncate">{player.name}</span>
         </div>
-        <div className="font-mono text-sm text-yellow-300">{formatBB(player.stack)}</div>
+        <div className="seat-stack font-mono text-sm text-yellow-300">{formatBB(player.stack)}</div>
         {net !== undefined && (
           <div
-            className={`text-[10px] font-mono ${net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-slate-500'}`}
+            className={`seat-net text-[10px] font-mono ${net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-slate-500'}`}
             title="本桌历史盈亏（不含补码）"
           >
             盈亏 {formatSigned(net)}
           </div>
         )}
-        {isThinking && <div className="text-xs text-sky-300">思考中…</div>}
+        {isThinking && <div className="seat-thinking text-xs text-sky-300">思考中…</div>}
       </div>
 
       {/* Bet chips committed this street */}
       {player.streetCommitted > 0 && !player.folded && (
-        <div className="mt-1 animate-chipMove rounded-full bg-slate-900/80 px-2 py-0.5 font-mono text-xs text-amber-300 ring-1 ring-amber-500/40">
+        <div className="seat-bet mt-1 animate-chipMove rounded-full bg-slate-900/80 px-2 py-0.5 font-mono text-xs text-amber-300 ring-1 ring-amber-500/40">
           {formatBB(player.streetCommitted)}
         </div>
       )}
 
       {badge && (
-        <div className={`absolute -top-1 right-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white ${badge.cls}`}>
+        <div className={`seat-badge absolute -top-1 right-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-white ${badge.cls}`}>
           {badge.text}
         </div>
       )}
 
       {isButton && (
         <div
-          className="absolute -bottom-3 left-0 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-yellow-200 to-amber-400 text-sm font-extrabold text-slate-900 shadow-lg ring-2 ring-white"
+          className="seat-button seat-button-dealer absolute -bottom-3 left-0 z-10 flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-yellow-200 to-amber-400 text-sm font-extrabold text-slate-900 shadow-lg ring-2 ring-white"
           title="庄家按钮 (Dealer)"
         >
           D
@@ -92,7 +92,7 @@ export function Seat({ player, isButton, isActive, isThinking, revealed, showHud
 
       {positionLabel === 'SB' && (
         <div
-          className="absolute -bottom-3 right-0 z-10 flex h-6 items-center rounded-full bg-sky-500 px-2 text-[11px] font-bold text-white shadow-lg ring-2 ring-white/80"
+          className="seat-button absolute -bottom-3 right-0 z-10 flex h-6 items-center rounded-full bg-sky-500 px-2 text-[11px] font-bold text-white shadow-lg ring-2 ring-white/80"
           title="小盲注 (Small Blind)"
         >
           小盲
@@ -100,7 +100,7 @@ export function Seat({ player, isButton, isActive, isThinking, revealed, showHud
       )}
       {positionLabel === 'BB' && (
         <div
-          className="absolute -bottom-3 right-0 z-10 flex h-6 items-center rounded-full bg-orange-500 px-2 text-[11px] font-bold text-white shadow-lg ring-2 ring-white/80"
+          className="seat-button absolute -bottom-3 right-0 z-10 flex h-6 items-center rounded-full bg-orange-500 px-2 text-[11px] font-bold text-white shadow-lg ring-2 ring-white/80"
           title="大盲注 (Big Blind)"
         >
           大盲
@@ -108,7 +108,7 @@ export function Seat({ player, isButton, isActive, isThinking, revealed, showHud
       )}
 
       {showHud && hudStat && hudStat.hands > 0 && (
-        <div className="absolute -left-2 top-8 w-20 rounded bg-black/80 p-1 text-[10px] leading-tight text-slate-200 ring-1 ring-fuchsia-500/40">
+        <div className="seat-hud absolute -left-2 top-8 w-20 rounded bg-black/80 p-1 text-[10px] leading-tight text-slate-200 ring-1 ring-fuchsia-500/40">
           <div>手数 {hudStat.hands}</div>
           <div>VPIP {(hudStat.vpip * 100).toFixed(0)}%</div>
           <div>PFR {(hudStat.pfr * 100).toFixed(0)}%</div>
