@@ -93,7 +93,7 @@ body {
   }
 
   .game-layout,
-  .table-column {
+  .game-table-column {
     min-height: 0;
   }
 
@@ -103,7 +103,9 @@ body {
     overflow: hidden;
   }
 
-  .table-column {
+  .game-table-column {
+    display: flex;
+    flex-direction: column;
     height: auto;
     flex: 1 1 0;
     gap: 4px;

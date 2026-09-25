@@ -145,7 +145,7 @@ function GameView({ onOpenDocs }: { onOpenDocs: () => void }) {
 
       <div className="game-layout grid flex-1 grid-cols-1 gap-3 lg:grid-cols-[1fr_22rem]">
         {/* Table + actions */}
-        <div className="table-column flex flex-col gap-3">
+        <div className="game-table-column flex flex-col gap-3">
           <PokerTable
             game={game}
             thinkingId={thinkingId}
