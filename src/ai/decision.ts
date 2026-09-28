@@ -275,6 +275,10 @@ export interface Exploit {
   foldPressure: number;
   /** Width of the hero's opening-bet range per size class (1 = population norm). */
   betWidth: Record<BetSizeClass, number>;
+  /** `betWidth` weighted by how often the hero opens with each size (1 before any bet). */
+  usedBetWidth: number;
+  /** The size the hero opens with most often (null before any bet). */
+  usualBetSize: BetSizeClass | null;
   /** Scales leads into the hero as the previous-street aggressor (>1: it seldom follows through). */
   leadMult: number;
   /** Fold-equity multiplier for raising the hero's post-flop bets. */
@@ -310,6 +314,8 @@ export function computeExploit(
     rangeMult: 1,
     foldPressure: 1,
     betWidth: { small: 1, medium: 1, big: 1 },
+    usedBetWidth: 1,
+    usualBetSize: null,
     leadMult: 1,
     raiseFold: 1,
     lightRaise: 0,
@@ -473,6 +479,9 @@ export function computeExploit(
         used
       : 1;
   base.leadMult = blend(lead / Math.max(1, usedWidth), weight * confidence(c.continuationChances, 15));
+  base.usedBetWidth = usedWidth;
+  const sizes: BetSizeClass[] = ['small', 'medium', 'big'];
+  base.usualBetSize = used > 0 ? sizes.reduce((a, b) => (usage[b] > usage[a] ? b : a)) : null;
 
   // A bettor who gives up everything but strong hands when raised is raised
   // light; one who never lets go is raised for value only. Until its raises
@@ -1199,11 +1208,23 @@ function decidePostflop(
   if (ctx.aggressorIsHero) rangeFraction *= exploit.rangeMult;
   // Facing the hero's opening bet: scale its range by how often the hero bets
   // this size. Big bets from a frequent overbettor also carry more bluffs.
+  // An all-in smaller than the hero's usual bet is no choice of size, only of
+  // betting at all, so it is read by the sizes the hero does bet.
   const heroBetSize =
     facingBet && ctx.aggressorIsHero && (ctx.streetAggressionCount ?? 1) === 1
       ? betSizeClass(ctx.betToPot ?? 0)
       : null;
-  const heroBetWidth = heroBetSize ? exploit.betWidth[heroBetSize] : 1;
+  const sizeRank = (size: BetSizeClass) => (size === 'small' ? 0 : size === 'medium' ? 1 : 2);
+  const forcedSize =
+    heroBetSize !== null &&
+    !!ctx.allIn?.bettor &&
+    exploit.usualBetSize !== null &&
+    sizeRank(heroBetSize) < sizeRank(exploit.usualBetSize);
+  const heroBetWidth = !heroBetSize
+    ? 1
+    : forcedSize
+      ? exploit.usedBetWidth
+      : exploit.betWidth[heroBetSize];
   rangeFraction = clamp(rangeFraction * heroBetWidth, 0.07, 0.88);
 
   let bluffShare = estimateBluffShare({

@@ -1037,6 +1037,7 @@ describe('hard exploits the observed human style', () => {
     board: Card[],
     betToPot: number,
     profile?: HeroProfile,
+    extra: Partial<DecisionContext> = {},
   ): { fold: number; raise: number } {
     let folds = 0;
     let raises = 0;
@@ -1061,6 +1062,7 @@ describe('hard exploits the observed human style', () => {
           aggressorIsHero: true,
           checkedThisStreet: true,
           preflopRaised: true,
+          ...extra,
         }),
         rng: seeded(s + 950),
         iterations: 200,
@@ -1087,6 +1089,22 @@ describe('hard exploits the observed human style', () => {
     expect(overbettor).toBeLessThan(standard - 0.3);
     // The read is per size: a small-bet habit says nothing about overbets.
     expect(foldRate('6h 6d', turn, 1.2, bettor('smallBets'))).toBeGreaterThan(overbettor + 0.3);
+  });
+
+  it('reads a short all-in by the sizes the player bets, not the size it was left with', () => {
+    // 24 chips into a 40-chip pot are all it has left: it could not overbet.
+    const turn = parseCards('Ks 9c 4d 2h');
+    const shove: Partial<DecisionContext> = {
+      maxRaiseTo: 24,
+      winnablePot: 88,
+      allIn: { opponents: 1, idle: 0, idleShare: 1, bettor: true, callers: 0, pot: 88, aggressor: true },
+    };
+    const overbettorBet = foldRate('8h 8d', turn, 0.6, bettor('bigBets'));
+    const overbettorShove = foldRate('8h 8d', turn, 0.6, bettor('bigBets'), shove);
+    expect(overbettorShove).toBeLessThan(overbettorBet - 0.3);
+    // A player who bets this size anyway is read by it, all-in or not.
+    const halfPotShove = foldRate('8h 8d', turn, 0.6, bettor('mediumBets'), shove);
+    expect(Math.abs(halfPotShove - foldRate('8h 8d', turn, 0.6, bettor('mediumBets')))).toBeLessThan(0.1);
   });
 
   // A flop c-bettor who bets half pot at 70% of its flop chances and switches
