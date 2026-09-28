@@ -108,6 +108,18 @@ export interface DecisionContext {
   aggressorPositionFactor?: number;
   /** Table position of the relevant aggressor (stable, unlike the live factor). */
   aggressorPosition?: TablePosition;
+  /** Table position of the last pre-flop aggressor. */
+  preflopAggressorPosition?: TablePosition;
+  /**
+   * The opponent whose pre-flop range the post-flop model should assume: the
+   * current/previous-street aggressor when that is an opponent, otherwise the
+   * pre-flop raiser, otherwise the widest live caller (big blind first).
+   */
+  rangeOpponentPosition?: TablePosition;
+  /** Whether that opponent was the last pre-flop aggressor (raiser) or a caller. */
+  rangeOpponentRaisedPreflop?: boolean;
+  /** Whether that opponent is a profiled (human) player. */
+  rangeOpponentIsProfiled?: boolean;
 }
 
 export interface AIDecision {
@@ -156,5 +168,20 @@ export interface HeroProfile {
     riverBigWeak: number;
     riverSmallShown: number;
     riverSmallWeak: number;
+    /**
+     * Post-flop streets on which the hero could open the betting (first to
+     * act, or checked to), and the opening bets made there by size class
+     * (`betSizeClass`). Unlike the river counters this needs no showdown.
+     */
+    betOpportunities: number;
+    smallBets: number;
+    mediumBets: number;
+    bigBets: number;
+    /** Of those, streets where the hero drove the previous street, and its bets there. */
+    continuationChances: number;
+    continuationBets: number;
+    /** Post-flop streets where a hero bet or raise was raised, and the folds there. */
+    raisesFaced: number;
+    raisesFolded: number;
   };
 }

@@ -71,6 +71,16 @@ export function buildDecisionContext(
   const aggressorIdx = game.players.findIndex((p) => p.id === relevantAggressorId);
   const aggressorPosition =
     aggressorIdx >= 0 ? positionFactorFor(game, aggressorIdx) : line.aggressorPositionFactor;
+  const preflopAggressorIdx = game.players.findIndex((p) => p.id === line.preflopAggressorId);
+  const liveOpponentById = (id: number) => liveOpponentIndices.find(({ p }) => p.id === id);
+  const rangeOpponent =
+    liveOpponentById(relevantAggressorId) ??
+    liveOpponentById(line.preflopAggressorId) ??
+    liveOpponentIndices.find(({ i }) => tablePositionFor(game, i) === 'bb') ??
+    liveOpponentIndices.find(({ i }) => tablePositionFor(game, i) === 'sb') ??
+    liveOpponentIndices[0];
+  const profiledIds =
+    meta.profiledPlayerIds ?? new Set(game.players.filter((p) => p.isHero).map((p) => p.id));
 
   return {
     hole: player.hole as [Card, Card],
@@ -107,6 +117,13 @@ export function buildDecisionContext(
     inPositionVsAggressor:
       aggressorIdx >= 0 ? positionFactor > aggressorPosition : positionFactor >= 0.6,
     aggressorPosition: aggressorIdx >= 0 ? tablePositionFor(game, aggressorIdx) : undefined,
+    preflopAggressorPosition:
+      preflopAggressorIdx >= 0 ? tablePositionFor(game, preflopAggressorIdx) : undefined,
+    rangeOpponentPosition: rangeOpponent ? tablePositionFor(game, rangeOpponent.i) : undefined,
+    rangeOpponentRaisedPreflop: rangeOpponent
+      ? rangeOpponent.p.id === line.preflopAggressorId
+      : undefined,
+    rangeOpponentIsProfiled: rangeOpponent ? profiledIds.has(rangeOpponent.p.id) : undefined,
     myBluffsThisHand: meta.bluffCount ?? 0,
     bluffedLastStreet:
       meta.lastBluffStreet !== undefined &&

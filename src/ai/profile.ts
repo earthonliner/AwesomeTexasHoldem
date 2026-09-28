@@ -32,6 +32,14 @@ export function emptyHeroProfile(): HeroProfile {
       riverBigWeak: 0,
       riverSmallShown: 0,
       riverSmallWeak: 0,
+      betOpportunities: 0,
+      smallBets: 0,
+      mediumBets: 0,
+      bigBets: 0,
+      continuationChances: 0,
+      continuationBets: 0,
+      raisesFaced: 0,
+      raisesFolded: 0,
     },
   };
 }
@@ -54,6 +62,21 @@ export interface HandSummary {
    * consumer must treat it as biased evidence and damp its influence.
    */
   riverBetShown?: { big: boolean; weak: boolean } | null;
+  /**
+   * Post-flop streets where the hero could open the betting, its opening bets
+   * by size, and the subset of chances where it had driven the previous street
+   * (continuation bets: c-bets and barrels).
+   */
+  openingBets?: {
+    opportunities: number;
+    small: number;
+    medium: number;
+    big: number;
+    continuationChances: number;
+    continuationBets: number;
+  };
+  /** Post-flop streets where the hero's bet or raise was raised, and how often it folded. */
+  raisedAfterBetting?: { faced: number; folded: number };
 }
 
 const AGGRESSIVE = new Set(['bet', 'raise', 'allin']);
@@ -68,6 +91,24 @@ export const RIVER_BIG_BET_TO_POT = 0.55;
 
 export function isBigRiverBet(betToPot: number): boolean {
   return betToPot > RIVER_BIG_BET_TO_POT;
+}
+
+export type BetSizeClass = 'small' | 'medium' | 'big';
+
+/**
+ * Opening-bet size classes shared by the frequency counters and the read that
+ * consumes them: a third-pot stab, a standard half-to-two-thirds bet, and a
+ * pot-sized bet or overbet.
+ */
+export function betSizeClass(betToPot: number): BetSizeClass {
+  return betToPot < 0.42 ? 'small' : betToPot < 0.85 ? 'medium' : 'big';
+}
+
+/** Wager relative to the pot before it, the same definition as `deriveLineContext.betToPot`. */
+function wagerToPot(action: ActionRecord): number {
+  const wager =
+    action.raiseBy && action.raiseBy > 0 ? action.raiseBy : (action.chipsPutIn ?? action.amount);
+  return wager / Math.max(1, action.potBefore);
 }
 
 /**
@@ -140,15 +181,47 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
       // (high card or playing the board) as weak evidence.
       const weak =
         playerHand.category === HandCategory.HighCard || playerHand.score === boardHand.score;
-      // Same wager definition as `deriveLineContext.betToPot`, so the recorded
-      // bucket is the one the decision layer later reads.
-      const wager =
-        riverBet.raiseBy && riverBet.raiseBy > 0
-          ? riverBet.raiseBy
-          : (riverBet.chipsPutIn ?? riverBet.amount);
-      const big = isBigRiverBet(wager / Math.max(1, riverBet.potBefore));
-      riverBetShown = { big, weak };
+      riverBetShown = { big: isBigRiverBet(wagerToPot(riverBet)), weak };
     }
+  }
+
+  const openingBets = {
+    opportunities: 0,
+    small: 0,
+    medium: 0,
+    big: 0,
+    continuationChances: 0,
+    continuationBets: 0,
+  };
+  const streets = ['preflop', 'flop', 'turn', 'river'] as const;
+  for (let s = 1; s < streets.length; s++) {
+    const first = actions.find((a) => a.street === streets[s] && a.playerId === playerId);
+    if (!first || first.toCall > 0) continue;
+    const bet = AGGRESSIVE.has(first.type);
+    openingBets.opportunities += 1;
+    if (bet) openingBets[betSizeClass(wagerToPot(first))] += 1;
+    const lastAggressor = [...actions]
+      .reverse()
+      .find((a) => a.street === streets[s - 1] && AGGRESSIVE.has(a.type));
+    if (lastAggressor?.playerId === playerId) {
+      openingBets.continuationChances += 1;
+      if (bet) openingBets.continuationBets += 1;
+    }
+  }
+
+  const raisedAfterBetting = { faced: 0, folded: 0 };
+  for (let s = 1; s < streets.length; s++) {
+    const onStreet = actions.filter((a) => a.street === streets[s]);
+    const betIndex = onStreet.findIndex((a) => a.playerId === playerId && AGGRESSIVE.has(a.type));
+    if (betIndex < 0) continue;
+    const raiseIndex = onStreet.findIndex(
+      (a, i) => i > betIndex && a.playerId !== playerId && AGGRESSIVE.has(a.type),
+    );
+    if (raiseIndex < 0) continue;
+    const response = onStreet.slice(raiseIndex + 1).find((a) => a.playerId === playerId);
+    if (!response || response.toCall <= 0) continue;
+    raisedAfterBetting.faced += 1;
+    if (response.type === 'fold') raisedAfterBetting.folded += 1;
   }
 
   return {
@@ -160,6 +233,8 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     facedCbet,
     heroFoldedToCbet,
     riverBetShown,
+    openingBets,
+    raisedAfterBetting,
   };
 }
 
@@ -213,6 +288,18 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
       c.riverSmallShown += 1;
       if (summary.riverBetShown.weak) c.riverSmallWeak += 1;
     }
+  }
+  if (summary.openingBets) {
+    c.betOpportunities += summary.openingBets.opportunities;
+    c.smallBets += summary.openingBets.small;
+    c.mediumBets += summary.openingBets.medium;
+    c.bigBets += summary.openingBets.big;
+    c.continuationChances += summary.openingBets.continuationChances;
+    c.continuationBets += summary.openingBets.continuationBets;
+  }
+  if (summary.raisedAfterBetting) {
+    c.raisesFaced += summary.raisedAfterBetting.faced;
+    c.raisesFolded += summary.raisedAfterBetting.folded;
   }
 
   const ratio = (num: number, den: number, prior: number, priorWeight: number) =>

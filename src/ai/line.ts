@@ -23,6 +23,8 @@ export interface LineContext {
   limpers: number;
   callersAfterRaise: number;
   aggressorPositionFactor: number;
+  /** Last pre-flop aggressor (the raiser the pot was built on), -1 when limped/unopened. */
+  preflopAggressorId: number;
 }
 
 /**
@@ -170,6 +172,7 @@ export function deriveLineContext(
     }
     return -1;
   })();
+  const preflopAggressorId = lastRaiseIndex >= 0 ? preflop[lastRaiseIndex].playerId : -1;
   const limpers = preflop.filter(
     (a, i) => a.type === 'call' && a.toCall <= game.bigBlind && (firstRaiseIndex < 0 || i < firstRaiseIndex),
   ).length;
@@ -212,5 +215,6 @@ export function deriveLineContext(
     limpers,
     callersAfterRaise,
     aggressorPositionFactor,
+    preflopAggressorId,
   };
 }

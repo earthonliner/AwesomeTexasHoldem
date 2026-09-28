@@ -33,6 +33,28 @@ describe('buildDecisionContext', () => {
     expect(ctx.betToPot).toBeGreaterThan(0);
   });
 
+  it('keeps the pre-flop raiser seat and roles after the table folds', () => {
+    let game = startHand(config, seats, 0, 1, () => 0.42);
+    // button = 0, SB = 1, BB = 2, UTG = 3
+    game = applyAction(game, { type: 'raise', amount: 6 });
+    while (game.toAct !== 2) game = applyAction(game, { type: 'fold', amount: 0 });
+
+    const bbPreflop = buildDecisionContext(game, 2);
+    expect(bbPreflop.aggressorPositionFactor).toBe(1); // live order: UTG acts last
+    expect(bbPreflop.aggressorPosition).toBe('early');
+
+    game = applyAction(game, { type: 'call', amount: 0 });
+    expect(game.street).toBe('flop');
+    const bbFlop = buildDecisionContext(game, 2);
+    expect(bbFlop.preflopAggressorPosition).toBe('early');
+    expect(bbFlop.rangeOpponentPosition).toBe('early');
+    expect(bbFlop.rangeOpponentRaisedPreflop).toBe(true);
+
+    const openerFlop = buildDecisionContext(game, 3);
+    expect(openerFlop.rangeOpponentPosition).toBe('bb');
+    expect(openerFlop.rangeOpponentRaisedPreflop).toBe(false);
+  });
+
   it('does not relabel an earlier bettor as unacted after a full raise', () => {
     let game = startHand(
       { ...config, seatCount: 3 },

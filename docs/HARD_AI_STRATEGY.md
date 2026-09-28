@@ -2,7 +2,7 @@
 
 > 本文档描述困难难度 AI 的完整决策模型：范围、胜率、弃牌率、动作 EV、尺度、混合与真人剥削是**如何在同一套口径下彼此衔接**的。以下数值是当前实现的基准、公式和上下限，用于模拟有范围意识、会混合策略且会针对熟客调整的线下现金局强玩家，**并非声称已经求得 GTO 均衡**。最终动作还会受随机混合、具体组合、位置、有效筹码、行动线和玩家画像共同影响；文中 `range=0.25` 表示按对应规则排序后保留约 25% 的两张底牌组合，不代表每一类牌都以 25% 概率行动。
 >
-> 代码入口：`src/ai/decision.ts`（决策）、`src/ai/preflopRanges.ts`（翻前范围函数）、`src/engine/preflopStrength.ts`（起手牌排序）、`src/engine/monteCarlo.ts`（范围采样与胜率）、`src/ai/profile.ts`（真人画像）、`src/ai/image.ts`（自我形象）。文末「审计采纳情况」记录了外部策略审计的逐条处理结果。
+> 代码入口：`src/ai/decision.ts`（决策）、`src/ai/preflopRanges.ts`（翻前范围函数）、`src/engine/preflopStrength.ts`（起手牌排序）、`src/engine/monteCarlo.ts`（范围采样与胜率）、`src/ai/profile.ts`（真人画像）、`src/ai/image.ts`（自我形象）、`scripts/ai-eval/`（配对评估与脚本对手）。文末「审计采纳情况」记录了外部策略审计的逐条处理结果与第二轮复盘，「当前实测行为指标」给出配对评估结果。
 
 ## 目录
 
@@ -159,19 +159,25 @@ limper 越多，死钱越多但被多人跟注、实现率下降的概率也越�
 | 其他 IP | **0.24** |
 | 其他 OOP | **0.17** |
 
+开池者的范围宽度按它的**桌面座位**取 §3 的 RFI 基准 `openerRange = openingRange(开池者座位, 桌人数)`（6 人桌：UTG 0.19、MP 0.22、HJ 0.255、CO 0.33、BTN 0.48、SB 0.42）。此前用的是翻后实时行动顺序：中间玩家全部弃牌后，UTG 开池面对 BB 同样“最后行动”，会被误当成按钮偷盲而过度防守。只有缺少座位信息时才回退到位置因子（≥0.72→0.40，≤0.42→0.19，其余 0.26）。
+
 ```text
+callerRange(座位, IP, openerRange)
+  = 位置基准 × clamp(sqrt(openerRange / 0.26), 0.80, 1.25)
+
 defendRange
-  = 位置基准
+  = callerRange
   × exp(-0.20 × max(0, openBB - 2.5))
-  × 开池者位置修正        // 位置因子 ≥0.72：×1.18；≤0.42：×0.78
   × style
   × 真人范围修正          // 被画像真人开池：× sqrt(rangeMult)
   + min(0.08, caller数 × 0.035)
 最终 clamp [0.055, 0.56]
 ```
 
+例：BB 面对 UTG open 防守 `0.42 × 0.855 ≈ 0.36`，面对 CO `≈ 0.47`，面对 BTN/SB（封顶 ×1.25）`≈ 0.53`，再乘尺寸衰减与 style。
+
 - 尺寸项为指数衰减，4.5BB→5BB 只会平滑收紧，不存在范围断崖。
-- Value 3-bet：对偏后开池 top **8.5%**，其他位置 top **5.5%**。
+- Value 3-bet：`value3Range = clamp(0.055 × (openerRange / 0.26)^0.7, 0.04, 0.095)`——面对 UTG 约 top **4.4%**（QQ+/AK 一带），CO 约 **6.5%**，BTN 约 **8.5%**，SB 约 **7.7%**。
 - Light 3-bet 候选：A2s–A5s、高张≥8 且 gap≤1 的同花连张、以及“同花、高张≥J、低张≥9”的结构（J9s/QTs/KJs/AQs 等）；还须位于 top `min(defendRange, 0.20)`，混合概率 `bluff × (IP ? 0.55 : 0.38) × foldPressure`。
 - 3-bet 目标倍数：IP **2.9–3.3×**，OOP **3.65–4.05×**；每个已跟注者再 `+0.65×` 形成 squeeze，仍受 pot-cap 限制。
 - IP/OOP 优先使用与攻击者的真实行动顺序；上下文缺失时，翻前以 `positionFactor≥0.65` 视为 IP，翻后以 `≥0.60` 视为 IP。
@@ -308,8 +314,11 @@ AI 自己是上一街攻击者（对手 check 给加注者）：0.08        // �
 下注尺度：- min(0.18, min(2, betToPot) × 0.12)
 同街 ≥2 次激进动作：×0.72；3-bet pot ×0.82；4-bet+ pot ×0.65；limped pot ×1.18
 turn -0.04；river -0.08；基础 clamp [0.12,0.85]
-check-raise ×0.62；相关攻击者为被画像真人 ×rangeMult；最终 clamp [0.07,0.88]
+check-raise ×0.62；相关攻击者为被画像真人 ×rangeMult
+面对真人本街首个下注：× betWidth[该下注的尺寸类]（§15）；最终 clamp [0.07,0.88]
 ```
+
+尺寸类由共享函数 `betSizeClass` 定义：`betToPot < 0.42` 为 small，`< 0.85` 为 medium，否则 big。统计与读取使用同一口径。
 
 **翻前范围连续带入**：
 
@@ -317,19 +326,24 @@ check-raise ×0.62；相关攻击者为被画像真人 ×rangeMult；最终 clam
 | --- | ---: |
 | 4-bet+ | **0.055** |
 | 3-bet | **0.12** |
-| Single-raised，相关攻击者偏前 / 居中 / 偏后 | **0.19 / 0.26 / 0.34** |
+| Single-raised，范围对手是翻前加注者 | `openerRange`：按加注者**桌面座位**（§5，6 人桌 UTG 0.19 … BTN 0.48） |
+| Single-raised，范围对手是跟注者 | `callerRange(其座位, BTN/CO 视为 IP, openerRange)`：BB 最宽（约 0.36–0.53），SB 与 OOP 冷跟最窄 |
 | Limped / 未加注 | **0.72** |
 | 无法分类但已加注 | **0.30** |
 
-被画像真人乘 `rangeMult`，最终 clamp `[0.035, 0.86]`。
+**范围对手**依次取：仍在局中的相关攻击者 → 仍在局中的翻前加注者 → BB → SB → 第一个在局对手。此前统一按“相关攻击者的实时位置”取 0.19/0.26/0.34，BB 跟注者会被当成开池范围，翻前加注者在翻后行动靠前时又被当成前位范围。范围对手为被画像真人时乘 `rangeMult`，最终 clamp `[0.035, 0.86]`。
 
 **下注范围的诈唬份额**：
 
 ```text
 base = 0.30 + boardWetness × 0.10；betToPot ≥ 0.8 +0.05；river +0.02
 同街 ≥2 次激进动作 ×0.70；多人 ÷ sqrt(liveOpponents)；clamp [0.08,0.50]
-check-raise ×0.62；被画像真人按大小注读数缩放；最终 clamp [0.03,0.50]
+check-raise ×0.62；被画像真人按大小注读数缩放
+真人首个下注为 big 且 betWidth.big > 1：× sqrt(betWidth.big)
+最终 clamp [0.03, betWidth > 1.3 ? 0.60 : 0.50]
 ```
+
+频繁超池的玩家不可能每次都有坚果：范围变宽的那部分主要是诈唬，所以大注的诈唬份额随宽度一起上升，上限也放宽到 0.60。
 
 **采样实现细节**：
 
@@ -456,10 +470,22 @@ directOdds ≤ 0.15 且 equity > 0.17 时 P(continue) ≥ 0.86
 
 | 动作 | 条件 | 与谁比较 |
 | --- | --- | --- |
-| Value raise | `equity ≥ valueThreshold + 0.08`、至少一对、混合 `0.48 + aggression×0.32` | `ΔEV = EV(raise) - EV(call)`，`EV(call) = equity × (pot + toCall) - toCall`；坚果免门 |
-| Semi-bluff raise | 真实听牌且 `bluffQuality ≥ 0.35`，混合 `bluffFrequency × 0.72` | `EV(raise) - max(EV(call), 0)` |
+| Value raise | `equity ≥ valueThreshold + 0.08`、至少一对、混合 `0.48 + aggression×0.32`（check-raise 位置的坚果再 +0.10） | `ΔEV = EV(raise) - EV(call)`，`EV(call) = equity × (pot + toCall) - toCall`；坚果免门 |
+| Semi-bluff raise | 真实听牌且 `bluffQuality ≥ 0.35`（check-raise 位置 ≥ 0.28），混合 `max(bluffFrequency × 0.72, checkRaiseBluff)` | `EV(raise) - max(EV(call), 0)` |
 | Bluff raise（弃牌区） | river `bluffQuality ≥ 0.35` / 其他街 `≥ 0.45`，`toCall ≤ 0.7 pot`，混合 `bluffFrequency × 0.35` | `EV(raise) - max(EV(call), 0)` |
+| Light raise（剥削） | 下注者是被画像真人、本街唯一一次激进动作、单挑、`lightRaise > 0`（§15）；跟注区与弃牌区中未走上面任何加注线的手牌 | 混合 `lightRaise`，`EV(raise) - max(EV(call), 0)` |
 | Trap-call | `trapMore`、`equity ≥ valueThreshold + 0.08`、未 commit，**42%** 只跟不加 | — |
+
+```text
+checkRaiseSpot  = AI 本街已 check，且面对的是本街唯一一次下注
+checkRaiseBluff = checkRaiseSpot
+                  ? clamp(0.16 + bluffQuality × 0.40, 0, 0.45) × raisePressure
+                    × (turn ? 0.7 : 1) × (多人 ? 0.5 : 1)
+                  : 0
+raisePressure   = 下注者是被画像真人 ? raiseFold : foldPressure
+```
+
+两头顺（`bluffQuality ≈ 0.33`）和非坚果同花听牌（`≈ 0.31`）过去低于 0.35 的门槛，check 之后从不 check-raise；check-raise 位置门槛降到 0.28，这些听牌就成了 check-raise 的诈唬部分，与 check-raise 的价值部分（暗三、两对）相配。顶对好踢脚不额外加成，check-raise 频率约 46%。
 
 加注的 `heroRisk` 与 `callerContribution` 区分“本方为加注先补齐的金额”和“对手面对加注需要补齐的金额”。
 
@@ -469,8 +495,9 @@ directOdds ≤ 0.15 且 equity > 0.17 时 P(continue) ≥ 0.86
 基础：主动下注/刺探 0.39；面对下注的加注 0.30
 IP +0.05；每多一名对手 -0.10
 尺寸 + clamp(size - 0.5, -0.25, 0.65) × 0.13；阻断牌 + blockerScore × 0.08
+check-raise（AI 已 check、加注本街唯一一次下注）+0.06   // 攻击的是宽的 c-bet/stab 范围
 面对 check-raise -0.16；同街 ≥2 次激进动作 -0.10
-× foldPressure；clamp [0.08, 0.72]
+× (加注被画像真人的下注 ? raiseFold : foldPressure)；clamp [0.08, 0.72]
 checked-through probe 额外 + 0.04 + positionFactor × 0.03，之后 clamp [0.08, 0.78]
 ```
 
@@ -518,16 +545,22 @@ checked-through probe 额外 + 0.04 + positionFactor × 0.03，之后 clamp [0.0
 
 | 优先级 | 计划 | 适用条件 | 抽样概率（EV 门之前） | 尺寸 |
 | ---: | --- | --- | --- | --- |
-| 1 | `polar-value` / `thin-value` / `protection-value` | `strongValue` 或 `protectionValue` | 价值 1、保护 `protectionChance`；再乘 `(1 - trapChance)` | 坚果用极化桶，其余薄价值桶 |
+| 1 | `polar-value` / `thin-value` / `protection-value` | `strongValue` 或 `protectionValue` | 价值 1、保护 `protectionChance`；再乘 `(1 - trapChance) × leadShare` | 坚果用极化桶，其余薄价值桶 |
 | 2 | `range-cbet` | flop、AI 是翻前最后攻击者、未面对 check-raise，且 `hasDraw` 或 `bluffQuality ≥ 0.08` 或 `showdownValue ≤ 0.30` | `clamp(cbetBase × cbetQuality × foldPressure, 0.04, 0.62)` | 薄价值桶 |
 | 3 | `checked-to-float` | 上一街对手是攻击者、本街已 check 给 AI、AI 上街不是攻击者、对手 ≤2 | `clamp((0.34 + IP 0.20 + aggression×0.12) × foldPressure × (0.45 + bluffQuality), 0, 0.72)` | 极化桶 |
 | 4 | `delayed-probe` / `delayed-protection` | turn/river 且上一街全桌 check-through；turn 候选：听牌、高牌、底/中对、`bluffQuality ≥ 0.10`；river 仅高牌 | `clamp(probeBase × probeQuality × foldPressure, 0.06, 0.64)` | 薄价值桶 |
 | 5 | `planned-barrel` | AI 上一街以 bluff 身份进攻且未面对 check-raise | `clamp(((river ? 0.34 : 0.52) + J+ runout 0.08 + bluffQuality×0.18) × bluffMult, 0, 0.72)` | 极化桶 |
-| 6 | `candidate-semi-bluff` / `blocker-bluff` | `bluffFrequency > 0` | `bluffFrequency`（§11） | 极化桶 |
+| 6 | `candidate-semi-bluff` / `blocker-bluff` | `bluffFrequency > 0` | `bluffFrequency × leadShare`（§11） | 极化桶 |
 
 ```text
 protectionChance = clamp(0.36 + aggression×0.34 + wetness×0.10 - (对手数-1)×0.07 + (IP ? 0.05 : 0), 0.25, 0.78)
-trapChance       = (trapMore ? 0.20 : 0) + (wetness<0.48、两对+、OOP 且上一街对手主导 ? 0.12 : 0)
+trapChance       = trapMore ? 0.20 : 0
+
+checkToRaiser = 上一街攻击者是对手、它本街还没有 check 给 AI、AI 不是上一街攻击者
+leadShare     = checkToRaiser
+                ? clamp(((flop 0.20 | turn 0.30 | river 0.45) + wetness × 0.12)
+                        × (该攻击者是被画像真人 ? leadMult : 1), 0, 0.85)
+                : 1
 
 cbetBase    = 0.40 + aggression×0.24 + (IP ? 0.10 : 0) + (3-bet/4-bet pot ? 0.08 : 0)
               - (对手数-1)×0.10 - wetness×0.08
@@ -537,13 +570,15 @@ probeBase    = 0.28 + aggression×0.24 + positionFactor×0.20 - (对手数-1)×0
 probeQuality = 一对 ? 0.75 : clamp(0.66 + bluffQuality×0.42 - showdownValue×0.18, 0.55, 1)
 ```
 
+**Check 给加注者**：在上一街攻击者之前行动时，此前的实现几乎把所有强牌都领先下注（donk），过牌范围因此只剩弱牌，面对任何下注都只能弃牌；AI 群体的 donk 率达 22%，面对 c-bet 的弃牌率 49%，flop check-raise 只有 0.6%。现在默认 check 给加注者：它会以约 60% 的频率继续下注，强牌和好听牌留给 check-raise 或 check-call（§12.4），领先下注只占少数，湿润面和后面的街道略多（河牌对方不再有牌要保护，领先价值下注更多）。旧的“OOP 两对+ 慢打 12%”被这条规则吸收。对手是真人时，领先份额按它的“跟进率”读数 `leadMult` 缩放：很少 c-bet/续打的加注者会白送免费牌，就更多领先下注；每街都开火的加注者正是 check-raise 的对象。check 时的标签为 `check-to-raiser`。
+
 这些概率都是**最终频率**（单次抽样），因此比旧的分支概率设得更高；随后再乘 §12.3 的 EV 门。所有计划在 commit 局面下只有具备真实权益时才允许补齐全下（价值 `equity ≥ 0.72`）。对子加听牌等半诈唬保留 `isBluff` 标记以接通后续 barrel；若 barrel 变成负 EV，AI 进入 `barrel-giveup` 而不是为了“讲故事”继续烧钱。
 
 ---
 
 ## 15. 置信度加权的真人画像剥削
 
-单机保存一份真人画像；局域网按真人座位分别维护。多人池只把当前/上一街相关真人攻击者的画像用于本次决策；没有明确攻击者时，只有 heads-up 才使用唯一真人作为 fallback。
+单机保存一份真人画像；局域网按真人座位分别维护。多人池只把当前/上一街相关真人攻击者的画像用于本次决策；没有明确攻击者时，只有 heads-up 才使用唯一真人作为 fallback。真人本手弃牌之后，单机模式不再把画像传给 AI（局域网已按在局真人解析）：此前 AI 之间剩下的底池也会按真人的弃牌率、诈唬读数去打，把针对真人的剥削用在了其他 AI 身上。
 
 **贝叶斯统计**（`(命中数 + prior×priorWeight) / (机会数 + priorWeight)`）：
 
@@ -556,9 +591,16 @@ probeQuality = 一对 ? 0.75 : clamp(0.66 + bluffQuality×0.42 - showdownValue×
 | 河牌**摊牌弱牌下注率**（`bluffCaught`） | 0.30 | 5 次摊牌下注 |
 | Went to showdown | 0.30 | 8 手牌 |
 | Fold to c-bet | 0.50 | 5 次机会 |
+| 开池下注频率（按尺寸类） | small **0.14** / medium **0.26** / big **0.03** | 10 次机会 |
+| 跟进率（c-bet 与续打） | **0.60** | 8 次机会 |
+| 下注被加注后的弃牌率 | **0.40** | 6 次 |
 
 - Steal 只统计 unopened pot 中 CO/BTN/SB 对盲位的首个 open。
 - C-bet 只统计翻前最后攻击者在 flop 的下注及真人回应。
+- **开池机会**：翻后某街真人第一次行动时无需跟注（第一个行动或被 check 到）。这次行动若是下注，按 `betSizeClass`（§9）记入 small / medium / big；面对下注的加注不算开池下注。
+- **跟进机会**：开池机会中真人是上一街最后攻击者的那部分（翻前加注者的 flop、flop 下注者的 turn……），下注即记一次跟进。
+- **被加注**：真人本街下注或加注之后，另一名玩家在同街加注，且真人需要回应（`toCall > 0`）；回应为弃牌时记一次弃牌。每街最多一次。
+- 开池频率、跟进率与被加注弃牌率都不需要摊牌，没有“只有被跟注的牌才会亮出”的偏差。开池频率与跟进率的先验取 AI 群体的实测水平；被加注弃牌率的先验 0.40 取自 §12.5 加注弃牌率的基准（AI 群体实测约 0.35），因此读数乘数约等于真人实际弃牌率与模型假设弃牌率之比。
 - 河牌“弱牌下注”只在摊牌后确认：高牌或只能玩公共牌才记为 weak。它衡量的是 **被看到的河牌下注中弱牌的比例**，不是总体诈唬率（成功的诈唬不会亮牌），因此读取时只按 **0.7** 的信任度混合。
 - **大小注共用一个分类函数** `isBigRiverBet`：`betToPot > 0.55` 为大注，统计与读取口径一致（此前统计用 0.55、读取用 0.70，0.6 pot 会被错桶）。
 
@@ -569,6 +611,9 @@ probeQuality = 一对 ? 0.75 : clamp(0.66 + bluffQuality×0.42 - showdownValue×
 偷盲权重 = 总权重 × clamp(stealFaced / 8, 0, 1)
 c-bet 权重 = 总权重 × clamp(cbetFaced / 10, 0, 1)
 行动权重 = 总权重 × clamp((aggressive + passive) / 35, 0, 1)
+下注权重 = 总权重 × clamp(开池机会 / 30, 0, 1)
+跟进权重 = 总权重 × clamp(跟进机会 / 15, 0, 1)
+加注权重 = 总权重 × clamp(被加注次数 / 12, 0, 1)
 blend(raw, w) = 1 + (raw - 1) × w
 ```
 
@@ -583,6 +628,13 @@ blend(raw, w) = 1 + (raw - 1) × w
 | Fold to c-bet | `bluffMult ×= blend(1 + (foldToCbet - 0.5) × 0.9, c-bet 权重)` |
 | 综合弃牌压力 | `blend(1 + (foldToCbet - 0.5)×0.7 + (foldToSteal - 0.5)×0.4, max(c-bet 权重, 偷盲权重))` |
 | 真人翻前松紧 | `observedRange = clamp((VPIP/0.28)×0.45 + (PFR/0.18)×0.55, 0.65, 1.65)`，按总权重向 1 混合 |
+| 开池下注宽度（每个尺寸类） | `freq = (该尺寸下注 + norm × 10) / (开池机会 + 10)`；`betWidth = blend(clamp(sqrt(freq / norm), 0.75, 1.9), 下注权重)`。面对真人本街首个下注时，范围比例乘该尺寸的 `betWidth`；big 尺寸还提高诈唬份额（§9） |
+| 跟进率 | `rate = (跟进下注 + 0.60 × 8) / (跟进机会 + 8)`；`leadMult = blend(clamp(0.60 / rate, 0.6, 2.2), 跟进权重)`，缩放 check 给真人加注者时的领先份额（§14） |
+| 被加注后弃牌 | `rate = (弃牌 + 0.40 × 6) / (被加注 + 6)`，`read = clamp(rate / 0.40, 0.45, 1.7)`；`raiseFold = foldPressure + (read - foldPressure) × 加注权重`（样本不足时由综合弃牌压力代替），用于加注真人下注时的弃牌率（§12.5）与 check-raise 诈唬频率（§12.4）；`lightRaise = clamp((read - 1.1) × 0.7, 0, 0.35) × 加注权重` |
+
+开池宽度用平方根做保守换算：下注频率的差异有一部分来自位置和主动权的分布，而不全是范围变宽。每 90% 机会都以 1/4 pot 刺探的玩家，small 宽度约 1.9（上限），面对其小注时的弃牌率明显下降；只有超池习惯的玩家才在超池时被加宽，一个尺寸的习惯不影响另一个尺寸的读数。
+
+`lightRaise` 只在真人被加注时的弃牌率明显高于基准时出现：弃牌率 0.67 时 `read ≈ 1.6`，AI 会以约 35% 的额外频率用本来只会跟注或弃牌的手牌加注它的下注；弃牌率与基准相当时为 0。反过来，从不弃牌的真人 `raiseFold` 降到 0.45，半诈唬加注和 check-raise 诈唬随之减少，只剩价值加注。
 
 `shownWeakEvidence`：至少 3 次摊牌河牌下注时为 `clamp(bluffCaught / 0.3, 0.4, 1.3)`，否则 0.7——**激进不等于诈唬多**，抓诈唬需要摊牌证据佐证。
 
@@ -655,23 +707,70 @@ recentImage = (1 - w) × short + w × long，  w = 0.25 + 0.5 × trust
 | 9.2 缓存键 | 工程 | 已核对：缓存只含公共牌（翻前另含排序模式），阻断与范围在使用时过滤 | §9 |
 | 9.3 随机数流分离 | 工程 | **未采纳**（决策/采样/思考时间仍共用一个 rng） | — |
 | 12.1 确定性测试 | 验证 | 新增排序、边界连续性、过牌者模型、精确枚举、负 EV 截断、单次抽样频率测试 | `*.test.ts` |
-| 12.2–12.5 回归集、消融、对手池 | 验证 | **未采纳**：目前只有行为诊断（§18），没有固定节点回归集与配对对战框架 | — |
+| 12.2–12.5 回归集、消融、对手池 | 验证 | **部分采纳**：6 个脚本对手 + 配对（duplicate）评估 `npm run eval:ai`（§18）；尚无固定节点回归集 | `scripts/ai-eval/` |
+
+### 17.1 第二轮复盘
+
+在审计之后又按“线下强玩家会怎么打、会读出什么”复盘了一遍，并用配对评估逐项验证：
+
+| 发现的问题 | 证据 | 处理 | 位置 |
+| --- | --- | --- | --- |
+| 翻前按翻后实时行动顺序判断开池者位置 | 中间玩家弃牌后，UTG 开池面对 BB 与按钮偷盲得到同样的防守范围与 3-bet 范围 | 按开池者桌面座位取 RFI 宽度，防守与 value 3-bet 随开池宽度连续变化 | §5 |
+| 翻后范围不区分翻前加注者与跟注者 | BB 跟注者被当成开池范围；翻后先行动的加注者被当成前位范围 | 范围对手按角色取开池范围或跟注范围 | §9 |
+| 在上一街攻击者之前行动时，强牌几乎全部领先下注 | 群体 donk 22.3%、面对 c-bet 弃牌 49%、flop check-raise 0.6%：过牌范围只剩弱牌 | Check 给加注者 + check-raise（价值牌与强听牌），领先下注只占少数 | §12.4、§14 |
+| 读不出“每次都小注刺探”和“频繁超池”的玩家 | 对 `prober` / `overbettor` 基本无收益（-23.7 / -1.2 bb/100） | 按尺寸统计开池下注频率，放宽对应尺寸的范围与大注诈唬份额 | §9、§15 |
+| 读不出很少跟进的加注者 | 对 c-bet 少的 `nit`，check 给它等于送免费牌 | 跟进率读数缩放领先份额 | §14、§15 |
+| 读不出“下注被加注就弃牌” | 对 `prober` 的 flop 小注只加注 3%，而它被加注后弃牌 67% | 被加注弃牌率读数：修正加注弃牌率、check-raise 诈唬频率，并加入 light raise | §12.4、§15 |
+| 真人弃牌后，画像仍作用于 AI 之间的底池 | 代码审查 | 单机只在真人在局时传入画像 | §15 |
+
+尚未处理：开池下注频率按尺寸汇总所有街道，只在 flop 用半池 c-bet、turn/river 改用超池的玩家，其 flop 半池 c-bet 的宽度读数被稀释（AI 面对 `overbettor` 的 flop c-bet 仍弃牌约 61%）；AI 作为攻击者的河牌下注几乎都来自价值计划（`planned-barrel` 约占 2%），河牌诈唬比例尚未按尺寸校准（审计 7.4）；翻后仍用单一有效筹码（审计 6.1）。
 
 ---
 
 ## 18. 当前实测行为指标
 
-6 人桌、100BB、困难 vs 困难、400 手、两组随机种子（`4242` / `777`）：
+### 18.1 配对评估：对脚本对手
 
-| 指标 | 审计前 | 当前 |
+`npm run eval:ai -- <bot> 1000 11,22`：6 人桌、100BB，两个种子各 1000 副牌，每副牌让脚本对手在 6 个座位各打一遍（共 12,000 手）。表中是脚本对手的 bb/100（**负数表示 AI 赢**），± 为标准误；两列使用完全相同的牌。
+
+| 脚本对手 | 漏洞 | 第二轮复盘前 | 当前 |
+| --- | --- | ---: | ---: |
+| `prober` | 90% 的机会都以 1/4 pot 刺探，被加注只留顶对以上 | -23.7 ±8.2 | **-47.5 ±8.4** |
+| `overbettor` | flop 半池 c-bet 70%，turn/river 用 1.25 pot 超池（强牌与大部分空气） | -1.2 ±7.6 | **-12.5 ±8.6** |
+| `nit` | 只玩 12%，只用顶对以上下注 | -17.4 ±5.6 | -20.5 ±5.5 |
+| `abc` | 价值下注、跟注顶对、少诈唬 | -10.9 ±6.6 | -6.8 ±6.5 |
+| `station` | 宽跟注，任何对子或听牌都跟到底 | -165.8 ±15.9 | -174.5 ±15.8 |
+| `maniac` | 开池 55%，被 check 到就下注 80% | -304.7 ±29.8 | **-415.6 ±33.5** |
+
+`abc` 的差异在误差之内：换种子 `33,44` 复测为 -18.8 → -21.5（±6.4），两组合计持平。
+
+读数生效后，AI 面对脚本对手下注的回应（弃牌 / 跟注 / 加注）：
+
+| 场景 | 第二轮复盘前 | 当前 |
+| --- | --- | --- |
+| `prober` 的 flop 1/4 pot 下注 | 36% / 61% / 3% | 17% / 67% / 16% |
+| `prober` 的 turn 1/4 pot 下注 | 32% / 63% / 5% | 19% / 61% / 20% |
+| `overbettor` 的 turn 超池 | 67% / 28% / 5% | 50% / 44% / 6% |
+| `overbettor` 的 river 超池 | 72% / 27% / 2% | 60% / 38% / 2% |
+| `maniac` 的 flop 中等下注 | 50% / 45% / 5% | 27% / 65% / 8% |
+
+### 18.2 困难 vs 困难的群体行为
+
+6 人桌、100BB、困难 vs 困难，两个种子（`4242` / `777`）各 1500 手：
+
+| 指标 | 第二轮复盘前 | 当前 |
 | --- | ---: | ---: |
-| 多人翻牌三街全部过牌率 | ≈ 15% | **8.4% / 9.4%** |
-| Flop 全桌过牌率 | 33% | 30% / 37% |
-| Turn 全桌过牌率 | — | 24% / 22% |
-| River 全桌过牌率 | 47% | **27% / 27%** |
-| VPIP / PFR | — | 0.33 / 0.19、0.32 / 0.19 |
-| 每手全下次数 | — | 0.03 / 0.025 |
-| 摊牌率（每手） | — | 0.20 / 0.23 |
-| 平均决策耗时 | — | ≈ 3.5ms |
+| VPIP / PFR | 27.6% / 18.1% | 27.2% / 17.5% |
+| 3-bet / 面对 3-bet 弃牌 | 7.6% / 49.4% | 6.8% / 51.6% |
+| Flop c-bet（单挑 / 多人） | 55.3% / 28.6% | 57.7% / 26.3% |
+| 面对 flop c-bet 弃牌 | 49.0% | **41.5%** |
+| Flop check-raise | 0.6% | **4.6%** |
+| Donk（领先下注） | 22.3% | **5.1%** |
+| Turn 续打 | 75.6% | 70.9% |
+| 看到翻牌后摊牌率 / 摊牌胜率 | 25.7% / 51.4% | 28.2% / 50.6% |
+| 发生全下的手牌 | 2.7% | 2.2% |
+| 平均决策耗时 | 3.2ms | 3.4ms |
 
-这些是行为诊断，不是收益证明；审计 12 章的固定节点回归集与配对对战尚待建立。
+多人翻牌三街全部过牌率（8 个种子、260 手、共约 400 个多人翻牌）：复盘前 **10.4%**，当前 **5.0%**。
+
+群体指标是行为诊断；收益以 18.1 的配对评估为准。固定节点回归集仍未建立。

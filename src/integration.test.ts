@@ -139,7 +139,7 @@ describe('integration: full AI-driven sessions', () => {
     );
     let multiwayFlops = 0;
     let threeStreetCheckdowns = 0;
-    const hands = 180;
+    const hands = 260;
 
     for (let hand = 0; hand < hands; hand++) {
       const seats: SeatInit[] = Array.from({ length: seatCount }, (_, i) => ({

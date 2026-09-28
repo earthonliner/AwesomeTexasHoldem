@@ -3,7 +3,7 @@ import { actionEV, decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile } from './profile';
-import type { DecisionContext, Personality } from './types';
+import type { DecisionContext, HeroProfile, Personality } from './types';
 import { parseCards, makeDeck, shuffle } from '../engine/deck';
 import type { Card } from '../engine/types';
 
@@ -1004,6 +1004,103 @@ describe('hard exploits the observed human style', () => {
   it('steals the blinds more from a human who over-folds', () => {
     expect(stealRaiseRate(true)).toBeGreaterThan(stealRaiseRate(false));
   });
+
+  // 150 chances to open the betting, 90% of them taken with the given size.
+  const bettor = (size: 'smallBets' | 'mediumBets' | 'bigBets') => ({
+    ...emptyHeroProfile(),
+    hands: 120,
+    counters: {
+      ...emptyHeroProfile().counters,
+      handsDealt: 120,
+      betOpportunities: 150,
+      [size]: 135,
+    },
+  });
+
+  // 40 of the player's bets or raises were raised, and it folded `folded` of them.
+  const raisedBettor = (folded: number): HeroProfile => ({
+    ...emptyHeroProfile(),
+    hands: 120,
+    counters: {
+      ...emptyHeroProfile().counters,
+      handsDealt: 120,
+      raisesFaced: 40,
+      raisesFolded: folded,
+    },
+  });
+
+  function responses(
+    hole: string,
+    board: Card[],
+    betToPot: number,
+    profile?: HeroProfile,
+  ): { fold: number; raise: number } {
+    let folds = 0;
+    let raises = 0;
+    const n = 50;
+    const pot = 40;
+    const bet = Math.round(pot * betToPot);
+    const street = board.length === 3 ? 'flop' : board.length === 4 ? 'turn' : 'river';
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards(hole) as [Card, Card],
+          board,
+          street,
+          potBefore: pot + bet,
+          toCall: bet,
+          currentBet: bet,
+          minRaiseTo: bet * 2,
+          betToPot,
+          streetAggressionCount: 1,
+          aggressorIsHero: true,
+          checkedThisStreet: true,
+          preflopRaised: true,
+        }),
+        rng: seeded(s + 950),
+        iterations: 200,
+        heroProfile: profile,
+      });
+      if (d.action === 'fold') folds++;
+      if (d.action === 'raise' || d.action === 'allin') raises++;
+    }
+    return { fold: folds / n, raise: raises / n };
+  }
+  const foldRate = (...args: Parameters<typeof responses>) => responses(...args).fold;
+
+  it('widens the range of a player who stabs small at every chance', () => {
+    const flop = parseCards('Ks 7c 2d');
+    const standard = foldRate('Qh Jd', flop, 0.3);
+    const stabber = foldRate('Qh Jd', flop, 0.3, bettor('smallBets'));
+    expect(stabber).toBeLessThan(standard - 0.2);
+  });
+
+  it('calls down a frequent overbettor lighter', () => {
+    const turn = parseCards('Ks 7c 2d 4h');
+    const standard = foldRate('6h 6d', turn, 1.2);
+    const overbettor = foldRate('6h 6d', turn, 1.2, bettor('bigBets'));
+    expect(overbettor).toBeLessThan(standard - 0.3);
+    // The read is per size: a small-bet habit says nothing about overbets.
+    expect(foldRate('6h 6d', turn, 1.2, bettor('smallBets'))).toBeGreaterThan(overbettor + 0.3);
+  });
+
+  it('raises the stabs of a player who folds to raises with any hand', () => {
+    const flop = parseCards('Ks 7c 2d');
+    const standard = responses('Qh Jd', flop, 0.3).raise;
+    const folder = responses('Qh Jd', flop, 0.3, raisedBettor(32)).raise;
+    expect(folder).toBeGreaterThan(standard + 0.2);
+  });
+
+  it('semi-bluff raises a player who never folds to a raise less', () => {
+    const flop = parseCards('9h 8c 2h');
+    const standard = responses('Jh Th', flop, 0.5).raise;
+    const sticky = responses('Jh Th', flop, 0.5, raisedBettor(2)).raise;
+    expect(sticky).toBeLessThan(standard - 0.1);
+    // Folding to raises at the usual rate adds no light raises.
+    expect(responses('Qh Jd', parseCards('Ks 7c 2d'), 0.3, raisedBettor(16)).raise).toBeLessThan(0.2);
+  });
 });
 
 describe('medium AI bluffs in a controlled, hard-to-read way', () => {
@@ -1257,6 +1354,73 @@ describe('cash-game defence vs an early-position open (hard)', () => {
     expect(fourAndHalf - five).toBeLessThan(0.12);
   });
 
+  it('reads the opener by table seat, not by who happens to act last heads-up', () => {
+    // Once the table folds, an under-the-gun opener acts last against the big
+    // blind exactly like the button. K9o defends the button steal only.
+    const defend = (aggressorPosition: 'btn' | 'early') =>
+      decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards('Kh 9d') as [Card, Card],
+          potBefore: 9,
+          toCall: 4,
+          currentBet: 6,
+          streetCommitted: 2,
+          totalCommitted: 2,
+          position: 'bb',
+          positionFactor: 0,
+          tableSize: 6,
+          preflopPotType: 'singleRaised',
+          preflopRaiseCount: 1,
+          aggressorPosition,
+          aggressorPositionFactor: 1,
+          inPositionVsAggressor: false,
+          minRaiseTo: 10,
+        }),
+        rng: seeded(21),
+      }).action;
+    expect(defend('btn')).not.toBe('fold');
+    expect(defend('early')).toBe('fold');
+  });
+
+  it('carries the raiser seat and the caller role into the post-flop range', () => {
+    const flopReason = (partial: Partial<DecisionContext>) =>
+      decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards('Kh 9d') as [Card, Card],
+          board: parseCards('9s 5c 2d'),
+          street: 'flop',
+          potBefore: 13,
+          toCall: 4,
+          currentBet: 4,
+          tableSize: 6,
+          preflopPotType: 'singleRaised',
+          preflopRaiseCount: 1,
+          ...partial,
+        }),
+        rng: seeded(5),
+        iterations: 200,
+      }).reason;
+    const raiser = (position: 'early' | 'btn') => ({
+      preflopAggressorPosition: position,
+      rangeOpponentPosition: position,
+      rangeOpponentRaisedPreflop: true,
+    });
+    expect(flopReason(raiser('early'))).toContain('pfR=0.19');
+    expect(flopReason(raiser('btn'))).toContain('pfR=0.48');
+    // A big-blind caller leading into an early opener still holds a defend range.
+    expect(
+      flopReason({
+        preflopAggressorPosition: 'early',
+        rangeOpponentPosition: 'bb',
+        rangeOpponentRaisedPreflop: false,
+      }),
+    ).toContain('pfR=0.36');
+  });
+
   it('squeezes bigger with a premium when there are callers behind the raise', () => {
     const aces = parseCards('As Ad') as [Card, Card];
     let hu = 0;
@@ -1385,5 +1549,106 @@ describe('positional & stack-depth play (hard)', () => {
     expect(nuts.length).toBeGreaterThan(0);
     expect(thin.length).toBeGreaterThan(0);
     expect(avg(nuts)).toBeGreaterThan(avg(thin) + 0.15);
+  });
+});
+
+describe('check to the raiser, then check-raise (hard)', () => {
+  const board = parseCards('Kh 8c 3d');
+  const set = parseCards('8s 8d') as [Card, Card];
+
+  function leadRate(aggressorCheckedFirst: boolean, heroProfile?: HeroProfile): number {
+    let bets = 0;
+    const n = 60;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        heroProfile,
+        ctx: ctx({
+          aggressorIsHero: !!heroProfile,
+          hole: set,
+          board,
+          street: 'flop',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 13,
+          minRaiseTo: 2,
+          positionFactor: aggressorCheckedFirst ? 1 : 0,
+          villainWasAggressorLastStreet: true,
+          villainCheckedToMe: aggressorCheckedFirst,
+          wasAggressorLastStreet: false,
+          inPositionVsAggressor: aggressorCheckedFirst,
+          preflopRaised: true,
+          preflopPotType: 'singleRaised',
+        }),
+        rng: seeded(s + 6000),
+        iterations: 150,
+      });
+      if (d.action === 'raise' || d.action === 'allin') bets++;
+    }
+    return bets / n;
+  }
+
+  it('checks a set to the raiser instead of leading into it', () => {
+    const lead = leadRate(false);
+    expect(lead).toBeLessThan(0.4);
+    // Once the raiser has checked, the same set bets for value.
+    expect(leadRate(true)).toBeGreaterThan(lead + 0.4);
+  });
+
+  it('leads more into a human raiser who seldom follows through', () => {
+    const passiveRaiser: HeroProfile = {
+      ...emptyHeroProfile(),
+      hands: 120,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 120,
+        continuationChances: 60,
+        continuationBets: 12,
+      },
+    };
+    expect(leadRate(false, passiveRaiser)).toBeGreaterThan(leadRate(false) + 0.15);
+  });
+
+  function raiseRate(hole: [Card, Card], flop: Card[], checkedFirst: boolean): number {
+    let raises = 0;
+    const n = 80;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board: flop,
+          street: 'flop',
+          potBefore: 19,
+          toCall: 6,
+          currentBet: 6,
+          minRaiseTo: 12,
+          positionFactor: checkedFirst ? 0 : 1,
+          checkedThisStreet: checkedFirst,
+          streetAggressionCount: 1,
+          betToPot: 0.46,
+          villainWasAggressorLastStreet: true,
+          inPositionVsAggressor: !checkedFirst,
+          preflopRaised: true,
+          preflopPotType: 'singleRaised',
+        }),
+        rng: seeded(s + 7000),
+        iterations: 150,
+      });
+      if (d.action === 'raise' || d.action === 'allin') raises++;
+    }
+    return raises / n;
+  }
+
+  it('check-raises a set and a strong draw against the c-bet', () => {
+    expect(raiseRate(set, board, true)).toBeGreaterThan(0.5);
+    const comboDraw = parseCards('Jh Th') as [Card, Card];
+    const wetFlop = parseCards('9h 8c 2h');
+    const xr = raiseRate(comboDraw, wetFlop, true);
+    expect(xr).toBeGreaterThan(0.2);
+    // Facing the same bet in position is a call-first spot for the draw.
+    expect(xr).toBeGreaterThan(raiseRate(comboDraw, wetFlop, false));
   });
 });
