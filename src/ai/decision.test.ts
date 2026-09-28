@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { actionEV, computeExploit, decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
-import { emptyHeroProfile } from './profile';
+import { emptyHeroProfile, RIVER_FOLD_PRIOR } from './profile';
 import type { AIDecision, DecisionContext, HeroProfile, Personality } from './types';
 import { parseCards, makeDeck, shuffle } from '../engine/deck';
 import type { Card } from '../engine/types';
@@ -1855,5 +1855,79 @@ describe('all-in opponents and side pots (hard)', () => {
       });
     expect(rate(() => short('5h 5d'), continues, 150, 8300)).toBeGreaterThan(0.7);
     expect(rate(() => short('Qh Jh'), continues, 150, 8300)).toBeLessThan(0.45);
+  });
+});
+
+describe('river bluffs linked to the bet size (hard)', () => {
+  // A missed J-high heads-up on the river, checked to us in position.
+  const board = parseCards('Ks 8d 3c 2h 5s');
+  const river = (
+    line: 'aggressor' | 'afterCheck',
+    partial: Partial<DecisionContext> = {},
+  ): DecisionContext =>
+    ctx({
+      hole: parseCards('Jh Th') as [Card, Card],
+      board,
+      street: 'river',
+      canCheck: true,
+      toCall: 0,
+      potBefore: 40,
+      stack: 160,
+      maxRaiseTo: 160,
+      minRaiseTo: 2,
+      effectiveStack: 160,
+      totalCommitted: 20,
+      positionFactor: 1,
+      inPositionVsAggressor: true,
+      checkedThisStreet: true,
+      preflopRaised: true,
+      preflopPotType: 'singleRaised',
+      ...(line === 'aggressor'
+        ? { wasAggressorLastStreet: true }
+        : { previousStreetCheckedThrough: true }),
+      ...partial,
+    });
+  const sample = (make: () => DecisionContext, seed: number, heroProfile?: HeroProfile) =>
+    Array.from({ length: 80 }, (_, s) =>
+      decide({ personality: tag, difficulty: 'hard', ctx: make(), rng: seeded(seed + s), iterations: 150, heroProfile }),
+    );
+  const betRate = (ds: AIDecision[]) =>
+    ds.filter((d) => d.action === 'raise' || d.action === 'allin').length / ds.length;
+
+  it('bets its air as the aggressor, and less after a checked-through turn', () => {
+    const aggressor = betRate(sample(() => river('aggressor'), 9100));
+    const afterCheck = betRate(sample(() => river('afterCheck'), 9100));
+    expect(aggressor).toBeGreaterThan(0.7);
+    expect(afterCheck).toBeGreaterThan(0.2);
+    expect(afterCheck).toBeLessThan(aggressor - 0.2);
+  });
+
+  it('splits the bluffs between the thin and the polar size', () => {
+    const bluffs = sample(() => river('aggressor'), 9100).filter((d) => d.action === 'raise');
+    const thin = bluffs.filter((d) => d.reason.endsWith('river-thin-bluff'));
+    const polar = bluffs.filter((d) => d.reason.endsWith('river-polar-bluff'));
+    expect(thin.length).toBeGreaterThan(bluffs.length * 0.3);
+    expect(polar.length).toBeGreaterThan(bluffs.length * 0.15);
+    expect(Math.max(...thin.map((d) => d.amount))).toBeLessThan(Math.min(...polar.map((d) => d.amount)));
+  });
+
+  it('bluffs a player who folds to river bets more, and a river station not at all', () => {
+    const read = (faced: number, folds: number): HeroProfile => {
+      const base = emptyHeroProfile();
+      return {
+        ...base,
+        hands: 120,
+        foldToRiverBet: (folds + RIVER_FOLD_PRIOR * 8) / (faced + 8),
+        counters: { ...base.counters, handsDealt: 120, riverBetsFaced: faced, riverBetFolds: folds },
+      };
+    };
+    const folder = read(30, 24);
+    const station = read(30, 2);
+    const spot = () => river('afterCheck', { aggressorIsHero: true });
+    expect(computeExploit('hard', spot(), folder).riverFold).toBeGreaterThan(1.4);
+    expect(computeExploit('hard', spot(), station).riverFold).toBeLessThan(0.6);
+    const unread = betRate(sample(spot, 9300));
+    expect(betRate(sample(spot, 9300, folder))).toBeGreaterThan(unread + 0.1);
+    expect(betRate(sample(spot, 9300, station))).toBeLessThan(0.05);
   });
 });

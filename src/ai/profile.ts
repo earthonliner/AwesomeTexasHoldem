@@ -22,8 +22,11 @@ export function streetCounterKey(street: PostflopStreet, counter: StreetBetCount
   return `${street}${counter}`;
 }
 
-/** Prior for the hero's fold rate to an opening river bet (hard-AI population). */
-export const RIVER_FOLD_PRIOR = 0.45;
+/**
+ * Prior for the hero's fold rate to an opening river bet: the hard-AI
+ * population rate (6-max, 100bb), so an unread player reads as the norm.
+ */
+export const RIVER_FOLD_PRIOR = 0.42;
 
 function emptyStreetCounters(): Record<StreetCounterKey, number> {
   const out = {} as Record<StreetCounterKey, number>;

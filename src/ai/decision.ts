@@ -39,7 +39,13 @@ import {
   valueFourBetProbability,
 } from './preflopRanges';
 import { analyseHand, type HandFeatures } from './handFeatures';
-import { betSizeClass, isBigRiverBet, streetCounterKey, type BetSizeClass } from './profile';
+import {
+  betSizeClass,
+  isBigRiverBet,
+  RIVER_FOLD_PRIOR,
+  streetCounterKey,
+  type BetSizeClass,
+} from './profile';
 
 export interface DecideOptions {
   personality: Personality;
@@ -275,6 +281,8 @@ export interface Exploit {
   raiseFold: number;
   /** Extra chance to raise the hero's bets with any hand once it is seen folding to raises. */
   lightRaise: number;
+  /** Fold-equity multiplier for opening bets into the hero on the river. */
+  riverFold: number;
 }
 
 /** Blend an exploit multiplier toward neutral (1) by sample confidence. */
@@ -305,6 +313,7 @@ export function computeExploit(
     leadMult: 1,
     raiseFold: 1,
     lightRaise: 0,
+    riverFold: 1,
   };
   if (difficulty !== 'hard' || !profile) return base;
   const c = profile.counters;
@@ -438,6 +447,14 @@ export function computeExploit(
   base.raiseFold = base.foldPressure + (raiseRead - base.foldPressure) * raiseWeight;
   base.lightRaise = clamp((raiseRead - 1.1) * 0.7, 0, 0.35) * raiseWeight;
 
+  // A river bet meets a finished hand, unlike the c-bets and steals behind the
+  // general fold read: a player who calls every river bet, or folds all but
+  // the strongest hands, sets how often a river bluff gets through. Until it
+  // has faced river bets the general fold read stands in.
+  const riverRead = clamp(profile.foldToRiverBet / RIVER_FOLD_PRIOR, 0.4, 1.7);
+  const riverWeight = weight * confidence(c.riverBetsFaced, 12);
+  base.riverFold = base.foldPressure + (riverRead - base.foldPressure) * riverWeight;
+
   return base;
 }
 
@@ -457,6 +474,27 @@ const STREET_OPENING_BET_NORM: Record<PostflopStreet, Record<BetSizeClass, numbe
 const CONTINUATION_NORM = 0.6;
 /** The same per street: flop c-bets, turn barrels, river barrels. */
 const STREET_CONTINUATION_NORM: Record<PostflopStreet, number> = { flop: 0.49, turn: 0.7, river: 0.63 };
+
+/** How the betting reached us on the river: who holds the turn's initiative. */
+type RiverLine = 'aggressor' | 'checkedTo' | 'lead' | 'afterCheck';
+
+function riverLine(ctx: DecisionContext): RiverLine {
+  if (ctx.wasAggressorLastStreet) return 'aggressor';
+  if (ctx.villainWasAggressorLastStreet) return ctx.villainCheckedToMe ? 'checkedTo' : 'lead';
+  return 'afterCheck';
+}
+
+/**
+ * Hard-AI river betting ranges per line (6-max, 100bb, 6,000 hands): value
+ * bets made per air hand (no pair) that reaches the river on that line, and
+ * the share of those value bets made with the thin size.
+ */
+const RIVER_VALUE_MIX: Record<RiverLine, { valuePerAir: number; thinShare: number }> = {
+  aggressor: { valuePerAir: 8.4, thinShare: 0.71 },
+  checkedTo: { valuePerAir: 6.1, thinShare: 0.76 },
+  lead: { valuePerAir: 2.2, thinShare: 0.8 },
+  afterCheck: { valuePerAir: 1.5, thinShare: 0.74 },
+};
 
 function postflopStreet(street: DecisionContext['street']): PostflopStreet | null {
   return street === 'flop' || street === 'turn' || street === 'river' ? street : null;
@@ -1491,6 +1529,50 @@ function decidePostflop(
       };
     }
 
+    // A river bet of s pots leaves a bluff-catcher indifferent with s/(1+2s)
+    // bluffs in it (1/3 pot 20%, 3/4 pot 30%, pot 33%): s/(1+s) bluffs per
+    // value bet of that size. Air supplies them, and how much air a river
+    // range holds depends on the line: the aggressor's has several value bets
+    // per air hand, so its air bets nearly always; after a checked-through
+    // turn, far less often. Bluffs split between the thin and the polar size
+    // in the proportion each size needs, the better blockers going big.
+    const riverBluffCandidate =
+      street === 'river' &&
+      (features.category === HandCategory.HighCard ||
+        (features.category === HandCategory.Pair &&
+          (features.pairKind === 'under' || features.pairKind === 'bottom') &&
+          features.blockerScore >= 0.25));
+    if (!plan && riverBluffCandidate) {
+      const line = riverLine(ctx);
+      const mix = RIVER_VALUE_MIX[line];
+      const bluffsPerValue = (size: number) => size / (1 + size);
+      const thinNeed = mix.thinShare * bluffsPerValue(thinSize);
+      const polarNeed = (1 - mix.thinShare) * bluffsPerValue(bluffSize);
+      const polarShare = clamp(
+        polarNeed / (thinNeed + polarNeed) + (features.blockerScore - 0.2) * 0.5,
+        0.15,
+        0.85,
+      );
+      const polar = rng() < polarShare;
+      plan = {
+        label: polar ? 'river-polar-bluff' : 'river-thin-bluff',
+        checkLabel: checkToRaiser ? 'check-to-raiser' : 'river-give-up',
+        chance: clamp(
+          (thinNeed + polarNeed) *
+            mix.valuePerAir *
+            clamp(exploit.riverFold, 0.4, 1.3) *
+            Math.pow(0.5, opponents - 1),
+          0,
+          0.85,
+        ),
+        size: polar ? bluffSize : thinSize,
+        isBluff: true,
+        foldEquityBonus: line === 'afterCheck' ? 0.04 + ctx.positionFactor * 0.03 : 0,
+        evGate: true,
+        allowAllIn: committed,
+      };
+    }
+
     // A float/probe requires evidence that the prior aggressor has actually
     // checked. Acting first out of position is a different donk-lead strategy.
     const floatSpot =
@@ -1612,6 +1694,7 @@ function decidePostflop(
       );
       const deltaEV = aggressiveEV(sized, foldEquity) - evCheck;
       reason.push(
+        `sz=${plan.size.toFixed(2)}`,
         `fe=${foldEquity.toFixed(2)}`,
         `dEV=${(deltaEV / Math.max(1, potBefore)).toFixed(2)}`,
       );
@@ -1834,7 +1917,14 @@ function estimateFoldEquity(
   // All-in opponents cannot fold; fold equity is the others folding.
   const canFold = ctx.liveOpponents - (ctx.allIn?.opponents ?? 0);
   foldEquity -= Math.max(0, canFold - 1) * 0.1;
-  foldEquity += clamp(size - 0.5, -0.25, 0.65) * 0.13;
+  // A river bet meets a finished hand and the response is far more size
+  // sensitive: the hard-AI population folds ~29% to a third-pot river bet and
+  // ~60% to three quarters, and no more to an overbet, which a range expecting
+  // polar overbets calls more often.
+  foldEquity +=
+    !isRaise && ctx.street === 'river'
+      ? clamp(size - 0.5, -0.25, 0.25) * 0.6
+      : clamp(size - 0.5, -0.25, 0.65) * 0.13;
   foldEquity += features.blockerScore * 0.08;
   // A check-raise attacks a bet made into a check: a wide range (c-bets,
   // stabs) that releases its air, unlike a bet that meets a lead.
@@ -1843,7 +1933,12 @@ function estimateFoldEquity(
   }
   if (ctx.facingCheckRaise) foldEquity -= 0.16;
   if ((ctx.streetAggressionCount ?? 0) >= 2) foldEquity -= 0.1;
-  foldEquity *= isRaise && ctx.aggressorIsHero ? exploit.raiseFold : exploit.foldPressure;
+  foldEquity *=
+    isRaise && ctx.aggressorIsHero
+      ? exploit.raiseFold
+      : !isRaise && ctx.street === 'river'
+        ? exploit.riverFold
+        : exploit.foldPressure;
   return clamp(foldEquity, 0.08, 0.72);
 }
 

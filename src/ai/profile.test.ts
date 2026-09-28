@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   emptyHeroProfile,
+  RIVER_FOLD_PRIOR,
   summarizePlayerHand,
   updateHeroProfile,
   type HandSummary,
@@ -224,7 +225,7 @@ describe('updateHeroProfile — new exploit dimensions', () => {
     p = updateHeroProfile(p, summarizePlayerHand(called, 0));
     expect(p.counters.riverBetsFaced).toBe(2);
     expect(p.counters.riverBetFolds).toBe(1);
-    expect(p.foldToRiverBet).toBeGreaterThan(0.45);
+    expect(p.foldToRiverBet).toBeGreaterThan(RIVER_FOLD_PRIOR);
     expect(p.foldToRiverBet).toBeLessThan(0.5);
   });
 
