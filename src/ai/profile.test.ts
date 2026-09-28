@@ -120,4 +120,57 @@ describe('updateHeroProfile — new exploit dimensions', () => {
     limped = applyAction(limped, { type: 'fold', amount: 0 });
     expect(summarizePlayerHand(limped, 2).facedSteal).toBe(false);
   });
+
+  it('counts opening-bet chances and opening bets by size, not bets into a bet', () => {
+    const action = (street: 'preflop' | 'flop' | 'turn' | 'river', playerId: number, type: 'check' | 'bet' | 'call' | 'raise', chips: number, potBefore: number, toCall: number) => ({
+      playerId,
+      street,
+      type,
+      amount: chips,
+      chipsPutIn: chips,
+      raiseBy: type === 'bet' || type === 'raise' ? chips - toCall : 0,
+      potBefore,
+      toCall,
+    });
+    const game = {
+      players: [
+        { id: 0, isHero: true, hole: parseCards('Ah Qd'), folded: false, sittingOut: false },
+        { id: 1, isHero: false, hole: parseCards('As Ks'), folded: false, sittingOut: false },
+      ],
+      board: parseCards('Ac 8c 3d 6s 2h'),
+      history: [
+        action('preflop', 0, 'raise', 6, 3, 1),
+        action('preflop', 1, 'call', 4, 9, 4),
+        // Flop: the pre-flop raiser c-bets a quarter pot when checked to.
+        action('flop', 1, 'check', 0, 12, 0),
+        action('flop', 0, 'bet', 3, 12, 0),
+        action('flop', 1, 'call', 3, 15, 3),
+        // Turn: villain leads, hero only calls — no chance to open.
+        action('turn', 1, 'bet', 9, 18, 0),
+        action('turn', 0, 'call', 9, 27, 9),
+        // River: checked to, hero overbets.
+        action('river', 1, 'check', 0, 36, 0),
+        action('river', 0, 'bet', 45, 36, 0),
+      ],
+      revealed: [],
+      buttonIndex: 0,
+      bigBlind: 2,
+    } as unknown as GameState;
+
+    const summary = summarizePlayerHand(game, 0);
+    // Only the flop follows the hero's own aggression; the river follows the villain's lead.
+    expect(summary.openingBets).toEqual({
+      opportunities: 2,
+      small: 1,
+      medium: 0,
+      big: 1,
+      continuationChances: 1,
+      continuationBets: 1,
+    });
+    const p = updateHeroProfile(emptyHeroProfile(), summary);
+    expect(p.counters.betOpportunities).toBe(2);
+    expect(p.counters.smallBets).toBe(1);
+    expect(p.counters.bigBets).toBe(1);
+    expect(p.counters.continuationChances).toBe(1);
+  });
 });

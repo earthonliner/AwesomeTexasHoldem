@@ -32,7 +32,7 @@ import {
   valueFourBetProbability,
 } from './preflopRanges';
 import { analyseHand, type HandFeatures } from './handFeatures';
-import { isBigRiverBet } from './profile';
+import { betSizeClass, isBigRiverBet, type BetSizeClass } from './profile';
 
 export interface DecideOptions {
   personality: Personality;
@@ -260,6 +260,10 @@ interface Exploit {
   rangeMult: number;
   /** Estimated propensity to release marginal hands under pressure. */
   foldPressure: number;
+  /** Width of the hero's opening-bet range per size class (1 = population norm). */
+  betWidth: Record<BetSizeClass, number>;
+  /** Scales leads into the hero as the previous-street aggressor (>1: it seldom follows through). */
+  leadMult: number;
 }
 
 /** Blend an exploit multiplier toward neutral (1) by sample confidence. */
@@ -282,6 +286,8 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
     bluffReadSmall: 1,
     rangeMult: 1,
     foldPressure: 1,
+    betWidth: { small: 1, medium: 1, big: 1 },
+    leadMult: 1,
   };
   if (difficulty !== 'hard' || !profile) return base;
   const c = profile.counters;
@@ -339,8 +345,37 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
     ? base.bluffReadAll
     : blend(small, weight * SHOWN_WEAK_TRUST);
 
+  // Opening-bet frequency per size needs no showdown, so it is free of the
+  // called-hands bias above. Against the population norm per chance to open,
+  // a player who stabs small at every chance or overbets far more often than
+  // usual bets a correspondingly wider range with that size.
+  const betWeight = weight * confidence(c.betOpportunities, 30);
+  const widthRead = (bets: number, norm: number): number => {
+    const freq = (bets + norm * 10) / (c.betOpportunities + 10);
+    return blend(clamp(Math.sqrt(freq / norm), 0.75, 1.9), betWeight);
+  };
+  base.betWidth = {
+    small: widthRead(c.smallBets, OPENING_BET_NORM.small),
+    medium: widthRead(c.mediumBets, OPENING_BET_NORM.medium),
+    big: widthRead(c.bigBets, OPENING_BET_NORM.big),
+  };
+
+  // Checking to a raiser who seldom follows through (c-bet/barrel) hands it
+  // free cards, so leads grow; a relentless barreller is the one to check-raise.
+  const continuationRate =
+    (c.continuationBets + CONTINUATION_NORM * 8) / (c.continuationChances + 8);
+  base.leadMult = blend(
+    clamp(CONTINUATION_NORM / continuationRate, 0.6, 2.2),
+    weight * confidence(c.continuationChances, 15),
+  );
+
   return base;
 }
+
+/** Population opening-bet frequency per chance to open, by size class. */
+const OPENING_BET_NORM: Record<BetSizeClass, number> = { small: 0.14, medium: 0.26, big: 0.03 };
+/** Population continuation-bet frequency (c-bets and barrels) when checked to. */
+const CONTINUATION_NORM = 0.6;
 
 export function decide(opts: DecideOptions): AIDecision {
   const { personality: p, difficulty, ctx, rng = defaultRng, heroProfile } = opts;
@@ -996,7 +1031,14 @@ function decidePostflop(
   });
   if (ctx.facingCheckRaise) rangeFraction *= 0.62;
   if (ctx.aggressorIsHero) rangeFraction *= exploit.rangeMult;
-  rangeFraction = clamp(rangeFraction, 0.07, 0.88);
+  // Facing the hero's opening bet: scale its range by how often the hero bets
+  // this size. Big bets from a frequent overbettor also carry more bluffs.
+  const heroBetSize =
+    facingBet && ctx.aggressorIsHero && (ctx.streetAggressionCount ?? 1) === 1
+      ? betSizeClass(ctx.betToPot ?? 0)
+      : null;
+  const heroBetWidth = heroBetSize ? exploit.betWidth[heroBetSize] : 1;
+  rangeFraction = clamp(rangeFraction * heroBetWidth, 0.07, 0.88);
 
   let bluffShare = estimateBluffShare({
     facingBet,
@@ -1012,7 +1054,8 @@ function decidePostflop(
       ? exploit.bluffReadBig
       : exploit.bluffReadSmall;
   }
-  bluffShare = clamp(bluffShare, 0.03, 0.5);
+  if (heroBetSize === 'big' && heroBetWidth > 1) bluffShare *= Math.sqrt(heroBetWidth);
+  bluffShare = clamp(bluffShare, 0.03, heroBetWidth > 1.3 ? 0.6 : 0.5);
 
   const preflopRange = preflopRangeForPostflop(ctx, exploit);
   const playersBehind = Math.max(0, ctx.playersBehind ?? 0);
@@ -1216,7 +1259,12 @@ function decidePostflop(
     const checkToRaiser =
       !!ctx.villainWasAggressorLastStreet && !ctx.villainCheckedToMe && !ctx.wasAggressorLastStreet;
     const leadShare = checkToRaiser
-      ? clamp((street === 'flop' ? 0.2 : street === 'turn' ? 0.3 : 0.45) + wet * 0.12, 0, 0.6)
+      ? clamp(
+          ((street === 'flop' ? 0.2 : street === 'turn' ? 0.3 : 0.45) + wet * 0.12) *
+            (ctx.aggressorIsHero ? exploit.leadMult : 1),
+          0,
+          0.85,
+        )
       : 1;
 
     if (strongValue || protectionValue) {

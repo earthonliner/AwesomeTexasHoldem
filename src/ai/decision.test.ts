@@ -3,7 +3,7 @@ import { actionEV, decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile } from './profile';
-import type { DecisionContext, Personality } from './types';
+import type { DecisionContext, HeroProfile, Personality } from './types';
 import { parseCards, makeDeck, shuffle } from '../engine/deck';
 import type { Card } from '../engine/types';
 
@@ -1004,6 +1004,72 @@ describe('hard exploits the observed human style', () => {
   it('steals the blinds more from a human who over-folds', () => {
     expect(stealRaiseRate(true)).toBeGreaterThan(stealRaiseRate(false));
   });
+
+  // 150 chances to open the betting, 90% of them taken with the given size.
+  const bettor = (size: 'smallBets' | 'mediumBets' | 'bigBets') => ({
+    ...emptyHeroProfile(),
+    hands: 120,
+    counters: {
+      ...emptyHeroProfile().counters,
+      handsDealt: 120,
+      betOpportunities: 150,
+      [size]: 135,
+    },
+  });
+
+  function foldRate(
+    hole: string,
+    board: Card[],
+    betToPot: number,
+    profile?: ReturnType<typeof bettor>,
+  ): number {
+    let folds = 0;
+    const n = 50;
+    const pot = 40;
+    const bet = Math.round(pot * betToPot);
+    const street = board.length === 3 ? 'flop' : board.length === 4 ? 'turn' : 'river';
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards(hole) as [Card, Card],
+          board,
+          street,
+          potBefore: pot + bet,
+          toCall: bet,
+          currentBet: bet,
+          minRaiseTo: bet * 2,
+          betToPot,
+          streetAggressionCount: 1,
+          aggressorIsHero: true,
+          checkedThisStreet: true,
+          preflopRaised: true,
+        }),
+        rng: seeded(s + 950),
+        iterations: 200,
+        heroProfile: profile,
+      });
+      if (d.action === 'fold') folds++;
+    }
+    return folds / n;
+  }
+
+  it('widens the range of a player who stabs small at every chance', () => {
+    const flop = parseCards('Ks 7c 2d');
+    const standard = foldRate('Qh Jd', flop, 0.3);
+    const stabber = foldRate('Qh Jd', flop, 0.3, bettor('smallBets'));
+    expect(stabber).toBeLessThan(standard - 0.2);
+  });
+
+  it('calls down a frequent overbettor lighter', () => {
+    const turn = parseCards('Ks 7c 2d 4h');
+    const standard = foldRate('6h 6d', turn, 1.2);
+    const overbettor = foldRate('6h 6d', turn, 1.2, bettor('bigBets'));
+    expect(overbettor).toBeLessThan(standard - 0.3);
+    // The read is per size: a small-bet habit says nothing about overbets.
+    expect(foldRate('6h 6d', turn, 1.2, bettor('smallBets'))).toBeGreaterThan(overbettor + 0.3);
+  });
 });
 
 describe('medium AI bluffs in a controlled, hard-to-read way', () => {
@@ -1459,14 +1525,16 @@ describe('check to the raiser, then check-raise (hard)', () => {
   const board = parseCards('Kh 8c 3d');
   const set = parseCards('8s 8d') as [Card, Card];
 
-  function leadRate(aggressorCheckedFirst: boolean): number {
+  function leadRate(aggressorCheckedFirst: boolean, heroProfile?: HeroProfile): number {
     let bets = 0;
     const n = 60;
     for (let s = 0; s < n; s++) {
       const d = decide({
         personality: tag,
         difficulty: 'hard',
+        heroProfile,
         ctx: ctx({
+          aggressorIsHero: !!heroProfile,
           hole: set,
           board,
           street: 'flop',
@@ -1495,6 +1563,20 @@ describe('check to the raiser, then check-raise (hard)', () => {
     expect(lead).toBeLessThan(0.4);
     // Once the raiser has checked, the same set bets for value.
     expect(leadRate(true)).toBeGreaterThan(lead + 0.4);
+  });
+
+  it('leads more into a human raiser who seldom follows through', () => {
+    const passiveRaiser: HeroProfile = {
+      ...emptyHeroProfile(),
+      hands: 120,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 120,
+        continuationChances: 60,
+        continuationBets: 12,
+      },
+    };
+    expect(leadRate(false, passiveRaiser)).toBeGreaterThan(leadRate(false) + 0.15);
   });
 
   function raiseRate(hole: [Card, Card], flop: Card[], checkedFirst: boolean): number {

@@ -168,5 +168,17 @@ export interface HeroProfile {
     riverBigWeak: number;
     riverSmallShown: number;
     riverSmallWeak: number;
+    /**
+     * Post-flop streets on which the hero could open the betting (first to
+     * act, or checked to), and the opening bets made there by size class
+     * (`betSizeClass`). Unlike the river counters this needs no showdown.
+     */
+    betOpportunities: number;
+    smallBets: number;
+    mediumBets: number;
+    bigBets: number;
+    /** Of those, streets where the hero drove the previous street, and its bets there. */
+    continuationChances: number;
+    continuationBets: number;
   };
 }
