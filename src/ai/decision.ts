@@ -1146,14 +1146,21 @@ function decidePostflop(
 
   const preflopRange = preflopRangeForPostflop(ctx, exploit);
   const playersBehind = Math.max(0, ctx.playersBehind ?? 0);
-  const alreadyCalled = facingBet ? Math.max(0, ctx.liveOpponents - 1 - playersBehind) : 0;
+  // Opponents already all-in before this street took no action on it: they
+  // are neither callers nor checkers, and hold their whole range.
+  const idleAllIn = ctx.allIn?.idle ?? 0;
+  const alreadyCalled = facingBet
+    ? Math.max(0, ctx.liveOpponents - 1 - playersBehind - idleAllIn)
+    : 0;
   // Nobody has bet: the opponents who already checked in front of us are
   // capped by that check. A check made to the previous street's aggressor is
   // barely informative (callers check almost everything to the raiser); a check
   // when nobody had the initiative removes most of the betting tier, and a
   // second consecutive check-through a little more. Players behind have shown
   // nothing on this street, but did check the previous one if it went through.
-  const checkedInFront = facingBet ? 0 : Math.max(0, ctx.liveOpponents - playersBehind);
+  const checkedInFront = facingBet
+    ? 0
+    : Math.max(0, ctx.liveOpponents - playersBehind - idleAllIn);
   const checkedBehind =
     !facingBet && ctx.previousStreetCheckedThrough ? playersBehind : 0;
   const checkedCapTier = ctx.wasAggressorLastStreet
@@ -1177,42 +1184,70 @@ function decidePostflop(
     checkedCapTier,
     unactedOpponents: facingBet ? playersBehind : playersBehind - checkedBehind,
     preflopRangeFraction: preflopRange,
+    idleAllInOpponents: idleAllIn,
+    idleAllInShare: ctx.allIn?.idleShare,
+    bettorAllIn: facingBet && !!ctx.allIn?.bettor,
+    allInCallers: facingBet ? (ctx.allIn?.callers ?? 0) : 0,
   };
   let equityIterations = iterations;
-  let eq = estimateEquityVsRange({
+  const first = estimateEquityVsRange({
     ...baseRangeOptions,
     iterations,
     rng,
     rangeFraction,
     bluffShare,
-  }).equity;
+  });
+  let eqAll = first.equity;
+  let eqLive = first.equityVsLive ?? eqAll;
+  let eqAllIn = first.equityVsAllIn ?? eqAll;
 
   const { toCall, potBefore, canCheck, street } = ctx;
   const opponents = Math.max(1, ctx.liveOpponents);
+  // With all-in opponents in the pot the hand splits into layers: the main pot
+  // they contest (won at showdown against everyone, or against them alone once
+  // the others fold) and the side pot of the players who can still act. Bets,
+  // fold equity and value thresholds are about the players who can still act;
+  // a call or fold also wins or gives up our share of the main pot.
+  const allInCount = ctx.allIn?.opponents ?? 0;
+  const foldable = Math.max(0, opponents - allInCount);
+  const layered = allInCount > 0 && foldable > 0;
+  const call = Math.min(toCall, ctx.stack);
+  const winnable = ctx.winnablePot ?? potBefore + call - (toCall - call);
+  const mainPot = layered ? clamp(ctx.allIn?.pot ?? 0, 0, winnable) : 0;
+  const sidePot = winnable - mainPot;
+  let eq = layered ? eqLive : eqAll;
   const hasDraw =
     street !== 'river' && (features.flushDraw || features.straightDraw);
   const inPosition = ctx.inPositionVsAggressor ?? ctx.positionFactor >= 0.6;
   const spr =
     potBefore > 0 ? Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack) / potBefore : 10;
-  let valueThreshold = Math.min(0.82, 0.55 + Math.max(0, opponents - 1) * 0.07);
+  const valueOpponents = layered ? foldable : opponents;
+  let valueThreshold = Math.min(0.82, 0.55 + Math.max(0, valueOpponents - 1) * 0.07);
   valueThreshold -= clamp(ctx.recentImage - 0.3, 0, 0.4) * 0.1;
+  // Share of the chips we can win now that we would take at showdown.
+  const showdownShare = () =>
+    layered && winnable > 0 ? (eqAll * mainPot + eqLive * sidePot) / winnable : eq;
+  const directOdds = call / Math.max(1, winnable);
 
   // Adaptive budget: a fixed sample cannot support a 1-2 point margin near a
   // decision boundary (SE ≈ 1.7% at 850 samples). Spend a second batch only
   // when the estimate sits within the noise band of the nearest threshold.
   if (street !== 'river' || opponents > 1) {
-    const directOddsNow = facingBet ? toCall / Math.max(1, potBefore + toCall) : NaN;
-    const boundary = facingBet ? directOddsNow : valueThreshold;
-    const se = Math.sqrt(Math.max(0.01, eq * (1 - eq)) / iterations);
-    if (Math.abs(eq - boundary) < 1.6 * se) {
+    const probe = facingBet ? showdownShare() : eq;
+    const boundary = facingBet ? directOdds : valueThreshold;
+    const se = Math.sqrt(Math.max(0.01, probe * (1 - probe)) / iterations);
+    if (Math.abs(probe - boundary) < 1.6 * se) {
       const second = estimateEquityVsRange({
         ...baseRangeOptions,
         iterations,
         rng,
         rangeFraction,
         bluffShare,
-      }).equity;
-      eq = (eq + second) / 2;
+      });
+      eqAll = (eqAll + second.equity) / 2;
+      eqLive = (eqLive + (second.equityVsLive ?? second.equity)) / 2;
+      eqAllIn = (eqAllIn + (second.equityVsAllIn ?? second.equity)) / 2;
+      eq = layered ? eqLive : eqAll;
       equityIterations = iterations * 2;
     }
   }
@@ -1227,49 +1262,72 @@ function decidePostflop(
   // the called branch is played against the ~n(1-f) opponents who continue,
   // each with the top (1-f) of their range — a joint response rather than all
   // n opponents continuing with unnarrowed ranges.
-  const calledEquityCache = new Map<number, number>();
-  const calledEquity = (foldEquity: number): number => {
+  //
+  // All-in opponents neither fold nor narrow: only the players who can still
+  // act respond, and the all-in seats stay in the called branch as they are.
+  const responders = Math.max(1, foldable);
+  const allInBettor = !!baseRangeOptions.bettorAllIn;
+  const allInCallers = baseRangeOptions.allInCallers ?? 0;
+  const calledEquityCache = new Map<number, { all: number; live: number }>();
+  const calledEquity = (foldEquity: number): { all: number; live: number } => {
     const key = Math.round(clamp(foldEquity, 0, 0.85) * 20);
     const cached = calledEquityCache.get(key);
     if (cached !== undefined) return cached;
-    const perPlayerFold = Math.pow(key / 20, 1 / opponents);
+    const perPlayerFold = Math.pow(key / 20, 1 / responders);
     const continueShare = clamp(1 - perPlayerFold, 0.15, 1);
-    const continuing = clamp(Math.round(opponents * (1 - perPlayerFold)), 1, opponents);
+    const continuing = clamp(Math.round(responders * (1 - perPlayerFold)), 1, responders);
     const shrink = (n: number) => Math.min(n, continuing);
-    const value = estimateEquityVsRange({
+    const result = estimateEquityVsRange({
       ...baseRangeOptions,
-      opponents: continuing,
+      opponents: continuing + allInCount,
       // Keep the role mix when fewer opponents continue: the bettor (if any)
       // continues first, then the passive seats.
       unactedOpponents: shrink(baseRangeOptions.unactedOpponents),
       checkedOpponents: shrink(baseRangeOptions.checkedOpponents),
-      cappedCallers: shrink(baseRangeOptions.cappedCallers),
+      cappedCallers: shrink(baseRangeOptions.cappedCallers - allInCallers) + allInCallers,
       continueShare,
       iterations: Math.max(120, Math.round(iterations * 0.6)),
       rng,
-      rangeFraction: clamp(rangeFraction * continueShare, 0.04, 0.88),
+      rangeFraction: allInBettor
+        ? rangeFraction
+        : clamp(rangeFraction * continueShare, 0.04, 0.88),
       // Most bluffs release against aggression; a few continue as re-bluffs.
-      bluffShare: facingBet ? bluffShare * 0.3 : 0,
-    }).equity;
+      // An all-in bettor's bluffs stay in the pot.
+      bluffShare: allInBettor ? bluffShare : facingBet ? bluffShare * 0.3 : 0,
+    });
+    const value = { all: result.equity, live: result.equityVsLive ?? result.equity };
     calledEquityCache.set(key, value);
     return value;
   };
   type Sized = ReturnType<typeof sizeRaise>;
-  const aggressiveEV = (sized: Sized, foldEquity: number): number =>
-    actionEV(
-      calledEquity(foldEquity),
-      potBefore,
-      sized.heroRisk,
-      foldEquity,
-      sized.callerContribution,
-    );
+  const aggressiveEV = (sized: Sized, foldEquity: number): number => {
+    const called = calledEquity(foldEquity);
+    if (!layered) {
+      return actionEV(
+        called.all,
+        potBefore,
+        sized.heroRisk,
+        foldEquity,
+        sized.callerContribution,
+      );
+    }
+    // Everyone who can fold does: we take the side pot and still play the
+    // main pot against the all-in players. Called: the main pot against
+    // everyone left, the side pot (with the new chips) against the callers.
+    const foldedEV = sidePot + eqAllIn * mainPot - call;
+    const calledEV =
+      called.all * mainPot +
+      called.live * (sidePot + sized.heroRisk - call + sized.callerContribution) -
+      sized.heroRisk;
+    return foldEquity * foldedEV + (1 - foldEquity) * calledEV;
+  };
   // Checking realises (most of) the current equity; on the river it is the
   // showdown value itself. Marginal hands realise less out of position and
   // multiway. Bets and raises must compete with this, not merely with zero.
   const checkRealisation =
     (street === 'river' ? 1 : inPosition ? 0.95 : 0.85) *
     Math.max(0.7, 1 - Math.max(0, opponents - 1) * 0.06);
-  const evCheck = eq * potBefore * checkRealisation;
+  const evCheck = (layered ? eqAll * mainPot + eqLive * sidePot : eq * potBefore) * checkRealisation;
   // Randomisation belongs to near-indifferent actions. An action whose EV is
   // clearly below the baseline is removed; inside the indifference band the
   // personality/mixing frequency decides (soft edge, since the EV model has
@@ -1299,10 +1357,18 @@ function decidePostflop(
   const bluffCap = difficulty === 'hard' ? 0.46 : 0.36;
   bluffFrequency = clamp(bluffFrequency, 0, bluffCap);
 
-  const mayRaise = ctx.canRaise !== false && ctx.maxRaiseTo > (ctx.currentBet ?? 0);
+  const mayRaise =
+    foldable > 0 && ctx.canRaise !== false && ctx.maxRaiseTo > (ctx.currentBet ?? 0);
   const committed = isShortStack(ctx);
   const reason = [
     `eq=${eq.toFixed(2)}`,
+    ...(layered
+      ? [
+          `eqAll=${eqAll.toFixed(2)}`,
+          `eqAllIn=${eqAllIn.toFixed(2)}`,
+          `main=${(mainPot / Math.max(1, winnable)).toFixed(2)}`,
+        ]
+      : []),
     `n=${equityIterations}`,
     `vt=${valueThreshold.toFixed(2)}`,
     `rq=${rangeFraction.toFixed(2)}`,
@@ -1344,7 +1410,10 @@ function decidePostflop(
     // Leading everything strong leaves a checking range that must fold to any
     // bet. Leads stay a minority, more on wet boards and on later streets.
     const checkToRaiser =
-      !!ctx.villainWasAggressorLastStreet && !ctx.villainCheckedToMe && !ctx.wasAggressorLastStreet;
+      !!ctx.villainWasAggressorLastStreet &&
+      !ctx.villainCheckedToMe &&
+      !ctx.wasAggressorLastStreet &&
+      !ctx.allIn?.aggressor;
     const leadShare = checkToRaiser
       ? clamp(
           ((street === 'flop' ? 0.2 : street === 'turn' ? 0.3 : 0.45) + wet * 0.12) *
@@ -1554,7 +1623,6 @@ function decidePostflop(
     return mk('check', 0, rng, false, [...reason, plan.checkLabel]);
   }
 
-  const directOdds = toCall / Math.max(1, potBefore + toCall);
   let needed = directOdds;
   if (hasDraw) {
     const cleanDraw = features.nutFlushDraw || features.openEnded || features.comboDraw;
@@ -1564,7 +1632,10 @@ function decidePostflop(
     needed *= 1 - impliedDiscount * (0.55 + p.stackReactivity * 0.45);
   }
 
-  const mathEdge = eq - needed;
+  // Calling wins the layers we are eligible for; all-in for less than the
+  // bet, the excess is not ours to win.
+  const callEquity = showdownShare();
+  const mathEdge = callEquity - needed;
   let edge = mathEdge;
   edge += (p.callDown - 0.5) * 0.055;
   // Position improves realisation only while cards remain; river pot odds are
@@ -1580,9 +1651,11 @@ function decidePostflop(
   // tightly on the river where nothing can change, looser with cards to come.
   const deadZone = street === 'river' ? 0.03 : 0.08;
   let continueProbability = mathEdge < -deadZone ? 0 : sigmoid(edge / temperature);
-  if (directOdds <= 0.15 && eq > 0.17) continueProbability = Math.max(0.86, continueProbability);
+  if (directOdds <= 0.15 && callEquity > 0.17) {
+    continueProbability = Math.max(0.86, continueProbability);
+  }
   reason.push(`odds=${directOdds.toFixed(2)}`, `edge=${edge.toFixed(2)}`);
-  const evCall = eq * (potBefore + toCall) - toCall;
+  const evCall = callEquity * winnable - call;
   // We checked and face the only bet of the street: the spot the
   // check-to-raiser line keeps its strong hands and good draws for.
   const checkRaiseSpot = !!ctx.checkedThisStreet && (ctx.streetAggressionCount ?? 1) === 1;
@@ -1758,7 +1831,9 @@ function estimateFoldEquity(
 ): number {
   let foldEquity = isRaise ? 0.3 : 0.39;
   foldEquity += (ctx.inPositionVsAggressor ?? ctx.positionFactor >= 0.6) ? 0.05 : 0;
-  foldEquity -= Math.max(0, ctx.liveOpponents - 1) * 0.1;
+  // All-in opponents cannot fold; fold equity is the others folding.
+  const canFold = ctx.liveOpponents - (ctx.allIn?.opponents ?? 0);
+  foldEquity -= Math.max(0, canFold - 1) * 0.1;
   foldEquity += clamp(size - 0.5, -0.25, 0.65) * 0.13;
   foldEquity += features.blockerScore * 0.08;
   // A check-raise attacks a bet made into a check: a wide range (c-bets,

@@ -233,6 +233,33 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
     expect(a.iterations).toBeLessThanOrEqual(990);
   });
 
+  it('reports equity against the all-in players and the others separately', () => {
+    // Middle pair against a bettor's strong range and a player who shoved a
+    // wide range before the flop: it beats the all-in range far more often.
+    const heroCards = hero('8h 7h');
+    const board = parseCards('Kd 8s 3c');
+    const split = estimateEquityVsRange({
+      heroCards, board, opponents: 2, iterations: 3000, rng: seeded(51), rangeFraction: 0.2,
+      preflopRangeFraction: 0.5, idleAllInOpponents: 1,
+    });
+    const vsAllIn = split.equityVsAllIn ?? NaN;
+    const vsLive = split.equityVsLive ?? NaN;
+    expect(vsAllIn).toBeGreaterThan(vsLive + 0.1);
+    expect(split.equity).toBeLessThan(Math.min(vsAllIn, vsLive));
+    const noneAllIn = estimateEquityVsRange({
+      heroCards, board, opponents: 2, iterations: 300, rng: seeded(51), rangeFraction: 0.2,
+    });
+    expect(noneAllIn.equityVsAllIn).toBeUndefined();
+    expect(noneAllIn.equityVsLive).toBeUndefined();
+
+    const allInRiver = estimateEquityVsRange({
+      heroCards: hero('Ah Kd'), board: parseCards('Ac 7s 4d 9h 2c'), opponents: 1,
+      rangeFraction: 0.4, bettorAllIn: true,
+    });
+    expect(allInRiver.equityVsAllIn).toBe(allInRiver.equity);
+    expect(allInRiver.equityVsLive).toBeUndefined();
+  });
+
   it('chooses a tighter range when facing a large bet', () => {
     const noBet = estimateRangeFraction({ street: 'river', facingBet: false, toCall: 0, pot: 20 });
     const smallBet = estimateRangeFraction({ street: 'river', facingBet: true, toCall: 5, pot: 20 });

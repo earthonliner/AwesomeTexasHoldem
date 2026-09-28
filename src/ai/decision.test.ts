@@ -3,7 +3,7 @@ import { actionEV, computeExploit, decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile } from './profile';
-import type { DecisionContext, HeroProfile, Personality } from './types';
+import type { AIDecision, DecisionContext, HeroProfile, Personality } from './types';
 import { parseCards, makeDeck, shuffle } from '../engine/deck';
 import type { Card } from '../engine/types';
 
@@ -1734,5 +1734,126 @@ describe('check to the raiser, then check-raise (hard)', () => {
     expect(xr).toBeGreaterThan(0.2);
     // Facing the same bet in position is a call-first spot for the draw.
     expect(xr).toBeGreaterThan(raiseRate(comboDraw, wetFlop, false));
+  });
+});
+
+describe('all-in opponents and side pots (hard)', () => {
+  // A 20bb shove before the flop was called by us and by a deep player who
+  // acts after us: the whole 120-chip pot is a main pot the shover contests
+  // without being able to fold, bet or be checked to.
+  const flop = parseCards('Kd 8s 3c');
+  const shover = { opponents: 1, idle: 1, idleShare: 1, bettor: false, callers: 0, pot: 120, aggressor: true };
+  const spot = (hole: string, partial: Partial<DecisionContext> = {}): DecisionContext =>
+    ctx({
+      hole: parseCards(hole) as [Card, Card],
+      board: flop,
+      street: 'flop',
+      canCheck: true,
+      toCall: 0,
+      liveOpponents: 2,
+      potBefore: 120,
+      stack: 160,
+      maxRaiseTo: 160,
+      minRaiseTo: 2,
+      effectiveStack: 160,
+      totalCommitted: 40,
+      positionFactor: 0.3,
+      playersBehind: 1,
+      preflopRaised: true,
+      preflopPotType: 'singleRaised',
+      villainWasAggressorLastStreet: true,
+      inPositionVsAggressor: false,
+      winnablePot: 120,
+      allIn: shover,
+      ...partial,
+    });
+  // The deep player bets 60 into the main pot after we check.
+  const facingSideBet = (hole: string, partial: Partial<DecisionContext> = {}) =>
+    spot(hole, {
+      canCheck: false,
+      toCall: 60,
+      currentBet: 60,
+      potBefore: 180,
+      minRaiseTo: 120,
+      playersBehind: 0,
+      checkedThisStreet: true,
+      streetAggressionCount: 1,
+      betToPot: 0.5,
+      winnablePot: 240,
+      allIn: { ...shover, aggressor: false },
+      ...partial,
+    });
+  const rate = (
+    make: () => DecisionContext,
+    match: (d: AIDecision) => boolean,
+    iterations: number,
+    seed: number,
+  ): number => {
+    let hits = 0;
+    const n = 60;
+    for (let s = 0; s < n; s++) {
+      const d = decide({ personality: tag, difficulty: 'hard', ctx: make(), rng: seeded(seed + s), iterations });
+      if (match(d)) hits++;
+    }
+    return hits / n;
+  };
+  const bets = (d: AIDecision) => d.action === 'raise' || d.action === 'allin';
+  const continues = (d: AIDecision) => d.action !== 'fold';
+
+  it('bets top pair into the live player instead of checking to an all-in raiser', () => {
+    const allInRaiser = rate(() => spot('Kh Jd'), bets, 150, 8000);
+    const liveRaiser = rate(
+      () => spot('Kh Jd', { allIn: undefined, winnablePot: undefined }),
+      bets,
+      150,
+      8000,
+    );
+    expect(allInRaiser).toBeGreaterThan(0.8);
+    expect(liveRaiser).toBeLessThan(allInRaiser - 0.5);
+  });
+
+  it('does not bluff when the pot is a main pot the all-in player cannot fold', () => {
+    for (const air of ['7h 6h', 'Qh Jh']) {
+      expect(rate(() => spot(air), bets, 150, 8100)).toBeLessThan(0.08);
+    }
+  });
+
+  it('calls the live bettor wider with a hand that still beats the all-in range', () => {
+    // Calling also keeps our share of the main pot, won against the shover's
+    // wide range rather than the bettor's strong one.
+    const layered = rate(() => facingSideBet('Ah 3d'), continues, 200, 2000);
+    const pooled = rate(
+      () => facingSideBet('Ah 3d', { allIn: undefined, winnablePot: undefined }),
+      continues,
+      200,
+      2000,
+    );
+    expect(layered).toBeGreaterThan(0.25);
+    expect(layered).toBeGreaterThan(pooled + 0.15);
+  });
+
+  it('calls all-in for less at the price of the chips it can win', () => {
+    // 20 chips behind facing 100 into 60: calling risks 20 to win 100 (20%),
+    // not 100 to win 260.
+    const short = (hole: string) =>
+      ctx({
+        hole: parseCards(hole) as [Card, Card],
+        board: flop,
+        street: 'flop',
+        toCall: 100,
+        currentBet: 100,
+        potBefore: 160,
+        stack: 20,
+        maxRaiseTo: 20,
+        effectiveStack: 20,
+        totalCommitted: 30,
+        canRaise: false,
+        streetAggressionCount: 1,
+        preflopRaised: true,
+        preflopPotType: 'singleRaised',
+        winnablePot: 100,
+      });
+    expect(rate(() => short('5h 5d'), continues, 150, 8300)).toBeGreaterThan(0.7);
+    expect(rate(() => short('Qh Jh'), continues, 150, 8300)).toBeLessThan(0.45);
   });
 });

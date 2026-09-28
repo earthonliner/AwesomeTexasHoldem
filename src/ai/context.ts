@@ -1,5 +1,6 @@
 import { getLegalActions, totalPot } from '../engine/game';
 import type { GameState } from '../engine/gameTypes';
+import { buildPots } from '../engine/sidePots';
 import type { Card, Street } from '../engine/types';
 import { deriveLineContext, positionFactorFor, tablePositionFor } from './line';
 import type { DecisionContext } from './types';
@@ -56,29 +57,53 @@ export function buildDecisionContext(
   );
   const relevantAggressorId =
     line.currentAggressorId >= 0 ? line.currentAggressorId : line.previousAggressorId;
-  const relevantOpponent =
-    game.players.find((p) => p.id === relevantAggressorId) ??
-    liveOpponentIndices
-      .map(({ p }) => p)
-      .sort((a, b) => b.stack + b.totalCommitted - (a.stack + a.totalCommitted))[0];
-
-  const amountOpponentCanStillContest = relevantOpponent
-    ? relevantOpponent.stack +
-      Math.max(0, relevantOpponent.streetCommitted - player.streetCommitted)
-    : player.stack;
-  const effectiveStack = Math.min(player.stack, amountOpponentCanStillContest);
+  // Chips an opponent can still put in against us. An all-in aggressor has
+  // none behind: the remaining betting is with whoever still has chips.
+  const contest = (p: GameState['players'][number]) =>
+    p.stack + Math.max(0, p.streetCommitted - player.streetCommitted);
+  const aggressorOpponent = liveOpponentIndices.find(({ p }) => p.id === relevantAggressorId)?.p;
+  const deepestOpponent = liveOpponentIndices
+    .map(({ p }) => p)
+    .sort((a, b) => contest(b) - contest(a))[0];
+  const stackOpponent =
+    aggressorOpponent && !aggressorOpponent.allIn ? aggressorOpponent : deepestOpponent;
+  const effectiveStack = Math.min(player.stack, stackOpponent ? contest(stackOpponent) : player.stack);
   const positionFactor = positionFactorFor(game, idx);
   const aggressorIdx = game.players.findIndex((p) => p.id === relevantAggressorId);
   const aggressorPosition =
     aggressorIdx >= 0 ? positionFactorFor(game, aggressorIdx) : line.aggressorPositionFactor;
+  const aggressorCanAct =
+    aggressorIdx >= 0 && !game.players[aggressorIdx].folded && !game.players[aggressorIdx].allIn;
+  const actingOpponents = liveOpponentIndices.filter(({ p }) => !p.allIn);
   const preflopAggressorIdx = game.players.findIndex((p) => p.id === line.preflopAggressorId);
-  const liveOpponentById = (id: number) => liveOpponentIndices.find(({ p }) => p.id === id);
-  const rangeOpponent =
-    liveOpponentById(relevantAggressorId) ??
-    liveOpponentById(line.preflopAggressorId) ??
-    liveOpponentIndices.find(({ i }) => tablePositionFor(game, i) === 'bb') ??
-    liveOpponentIndices.find(({ i }) => tablePositionFor(game, i) === 'sb') ??
-    liveOpponentIndices[0];
+  // The range model follows an opponent who can still act; an all-in player's
+  // range only matters at showdown.
+  const byRangePreference = (pool: typeof liveOpponentIndices) =>
+    pool.find(({ p }) => p.id === relevantAggressorId) ??
+    pool.find(({ p }) => p.id === line.preflopAggressorId) ??
+    pool.find(({ i }) => tablePositionFor(game, i) === 'bb') ??
+    pool.find(({ i }) => tablePositionFor(game, i) === 'sb') ??
+    pool[0];
+  const rangeOpponent = byRangePreference(actingOpponents) ?? byRangePreference(liveOpponentIndices);
+
+  // Pot layers, counting our call: the part we can win at all, and the part
+  // that all-in opponents contest as well (they can neither fold nor add to it).
+  const call = Math.max(0, Math.min(game.currentBet - player.streetCommitted, player.stack));
+  const pots = buildPots(
+    game.players.map((p) => ({
+      playerId: p.id,
+      contributed: p.totalCommitted + (p.id === player.id ? call : 0),
+      folded: p.folded || p.sittingOut,
+    })),
+  ).filter((pot) => pot.eligible.includes(player.id));
+  const allInOpponents = liveOpponentIndices.filter(({ p }) => p.allIn).map(({ p }) => p);
+  const allInIds = new Set(allInOpponents.map((p) => p.id));
+  const idleAllIn = allInOpponents.filter((p) => !actedThisStreet.has(p.id));
+  const committedAfterFlop = (id: number) => {
+    const last = [...game.history].reverse().find((a) => a.playerId === id);
+    return !!last && last.street !== 'preflop';
+  };
+  const currentAggressor = liveOpponentIndices.find(({ p }) => p.id === line.currentAggressorId)?.p;
   const profiledIds =
     meta.profiledPlayerIds ?? new Set(game.players.filter((p) => p.isHero).map((p) => p.id));
 
@@ -100,6 +125,23 @@ export function buildDecisionContext(
     committedOpponents: liveOpponentIndices.filter(
       ({ p }) => p.allIn || (game.currentBet > 0 && p.streetCommitted >= game.currentBet),
     ).length,
+    winnablePot: pots.reduce((sum, pot) => sum + pot.amount, 0),
+    allIn:
+      allInOpponents.length > 0
+        ? {
+            opponents: allInOpponents.length,
+            idle: idleAllIn.length,
+            idleShare: idleAllIn.some((p) => committedAfterFlop(p.id)) ? 0.5 : 1,
+            bettor: !!currentAggressor?.allIn,
+            callers: allInOpponents.filter(
+              (p) => actedThisStreet.has(p.id) && p.id !== line.currentAggressorId,
+            ).length,
+            pot: pots
+              .filter((pot) => pot.eligible.some((id) => allInIds.has(id)))
+              .reduce((sum, pot) => sum + pot.amount, 0),
+            aggressor: !!aggressorOpponent?.allIn,
+          }
+        : undefined,
     street: game.street as DecisionContext['street'],
     canCheck: legal.canCheck,
     canRaise: legal.canBet || legal.canRaise,
@@ -114,8 +156,11 @@ export function buildDecisionContext(
       relevantAggressorId >= 0 && meta.profiledPlayerIds?.has(relevantAggressorId)
         ? relevantAggressorId
         : undefined,
-    inPositionVsAggressor:
-      aggressorIdx >= 0 ? positionFactor > aggressorPosition : positionFactor >= 0.6,
+    inPositionVsAggressor: aggressorCanAct
+      ? positionFactor > aggressorPosition
+      : aggressorIdx >= 0 && actingOpponents.length > 0
+        ? actingOpponents.every(({ i }) => positionFactor > positionFactorFor(game, i))
+        : positionFactor >= 0.6,
     aggressorPosition: aggressorIdx >= 0 ? tablePositionFor(game, aggressorIdx) : undefined,
     preflopAggressorPosition:
       preflopAggressorIdx >= 0 ? tablePositionFor(game, preflopAggressorIdx) : undefined,

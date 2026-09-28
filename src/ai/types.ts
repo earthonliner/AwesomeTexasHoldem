@@ -71,6 +71,14 @@ export interface DecisionContext {
    * contest the pot regardless of what the players still to act do.
    */
   committedOpponents?: number;
+  /**
+   * Chips we can still win once we call: the pot layers we are eligible for,
+   * including our own call. Less than `potBefore + toCall` when we are all-in
+   * for less than the bet (the excess goes back or to a side pot).
+   */
+  winnablePot?: number;
+  /** Live opponents who are already all-in, when there are any. */
+  allIn?: AllInOpponents;
 
   // ---- Hand story-line (optional; derived from the action history) ----
   /** This player made the last aggressive action on the previous street. */
@@ -120,6 +128,27 @@ export interface DecisionContext {
   rangeOpponentRaisedPreflop?: boolean;
   /** Whether that opponent is a profiled (human) player. */
   rangeOpponentIsProfiled?: boolean;
+}
+
+/**
+ * All-in opponents contest the pot layers they are eligible for, but can
+ * neither fold nor put in more chips: fold equity comes only from the others,
+ * and new chips go to a side pot the all-in players cannot win.
+ */
+export interface AllInOpponents {
+  opponents: number;
+  /** Of those, the ones that went all-in before this street and have not acted on it. */
+  idle: number;
+  /** Share of their range the idle ones are sampled from: 1 pre-flop, less when they committed later. */
+  idleShare: number;
+  /** The bet or raise being faced on this street is an opponent's all-in. */
+  bettor: boolean;
+  /** All-in opponents who acted on this street without being its last aggressor. */
+  callers: number;
+  /** Chips in the pot layers they contest together with us (counting our call). */
+  pot: number;
+  /** The current or previous street's aggressor is all-in: nobody is left to check to. */
+  aggressor: boolean;
 }
 
 export interface AIDecision {
