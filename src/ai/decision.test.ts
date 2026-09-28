@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { buildDecisionContext } from './context';
 import { actionEV, computeExploit, decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile, RIVER_FOLD_PRIOR } from './profile';
 import type { AIDecision, DecisionContext, HeroProfile, Personality } from './types';
 import { parseCards, makeDeck, shuffle } from '../engine/deck';
-import type { Card } from '../engine/types';
+import { applyAction, startHand, type SeatInit } from '../engine/game';
+import { BB_CHIPS } from '../engine/gameTypes';
+import type { ActionType, Card } from '../engine/types';
 
 function seeded(seed: number): () => number {
   let a = seed >>> 0;
@@ -1855,6 +1858,44 @@ describe('all-in opponents and side pots (hard)', () => {
       });
     expect(rate(() => short('5h 5d'), continues, 150, 8300)).toBeGreaterThan(0.7);
     expect(rate(() => short('Qh Jh'), continues, 150, 8300)).toBeLessThan(0.45);
+  });
+
+  // Pre-flop at a 6-max table, button on seat 5 (UTG is seat 2), 100bb unless given.
+  const preflop = (stacks: Record<number, number>, ...actions: [ActionType, number?][]) => {
+    const table: SeatInit[] = Array.from({ length: 6 }, (_, i) => ({
+      id: i,
+      name: `P${i}`,
+      isHero: false,
+      stack: (stacks[i] ?? 100) * BB_CHIPS,
+    }));
+    const config = { seatCount: 6, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' } as const;
+    const game = actions.reduce(
+      (g, [type, amount = 0]) => applyAction(g, { type, amount }),
+      startHand(config, table, 5, 1, () => 0.42),
+    );
+    return buildDecisionContext(game, game.toAct);
+  };
+  const withHole = (c: DecisionContext, hole: string): DecisionContext => ({
+    ...c,
+    hole: parseCards(hole) as [Card, Card],
+  });
+
+  it('plays a short all-in raise as a jam even with deep players behind', () => {
+    // UTG shoves 18bb and it folds to the button; both blinds have 100bb.
+    const jam = preflop({ 2: 18 }, ['allin'], ['fold'], ['fold']);
+    expect(jam.effectiveStack).toBe(100 * BB_CHIPS);
+    // A raise cannot fold the shover: only hands that want to isolate raise.
+    expect(rate(() => withHole(jam, 'Kc Qc'), bets, 850, 9400)).toBe(0);
+    expect(rate(() => withHole(jam, 'As Ah'), (d) => d.reason.includes('pf-jam-isolate'), 850, 9400)).toBe(1);
+  });
+
+  it('calls a pre-flop all-in for less at the price of the chips it can win', () => {
+    // UTG opens 3bb, two players call and the button shoves 100bb: the big
+    // blind's last 5bb win a 21.5bb main pot (23%), not 99bb into 209.5bb (47%).
+    const dead = preflop({ 1: 6 }, ['raise', 3 * BB_CHIPS], ['call'], ['call'], ['allin'], ['fold']);
+    expect(dead.winnablePot).toBe(21.5 * BB_CHIPS);
+    expect(rate(() => withHole(dead, 'Kc Qc'), continues, 850, 9400)).toBeGreaterThan(0.9);
+    expect(rate(() => withHole(dead, '7d 2c'), continues, 850, 9400)).toBe(0);
   });
 });
 

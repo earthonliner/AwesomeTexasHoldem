@@ -653,9 +653,11 @@ function decidePreflop(
     return mk(canCheck ? 'check' : 'fold', 0, rng, false, [...reason, 'pf-limp-fold']);
   }
 
-  // Large raises/all-ins are equity-vs-range decisions, not VPIP cutoffs.
+  // Large raises/all-ins are equity-vs-range decisions, not VPIP cutoffs. A
+  // raiser who is all-in cannot be raised off its hand, however deep the
+  // players behind are.
   const committedCall =
-    toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo;
+    toCall >= effective * 0.52 || currentLevel >= ctx.maxRaiseTo || !!ctx.allIn?.bettor;
   if (committedCall) {
     let jamRange = shoveRangeFraction(wagerBB);
     // A short open-jam with only the blinds behind (cutoff, button or the small
@@ -690,8 +692,10 @@ function decidePreflop(
       preflopRangeFraction: 1,
       preflopRanking: 'allin',
     }).equity;
-    const odds = toCall / Math.max(1, potBefore + toCall);
-    const potAfterCall = potBefore + toCall;
+    // All-in for less than the wager, the excess is not ours to win.
+    const call = Math.min(toCall, ctx.stack);
+    const potAfterCall = ctx.winnablePot ?? potBefore + call - (toCall - call);
+    const odds = call / Math.max(1, potAfterCall);
     const chipsBehind = Math.max(0, effective - toCall);
     const notClosed = playersBehind > 0 || chipsBehind > potAfterCall * 0.2;
     const margin =
