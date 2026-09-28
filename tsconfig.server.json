@@ -15,6 +15,7 @@
   },
   "include": [
     "server/**/*.ts",
+    "scripts/**/*.ts",
     "src/online/protocol.ts",
     "src/online/redact.ts",
     "src/engine/**/*.ts",
