@@ -435,7 +435,19 @@ export function computeExploit(
     );
     lead += (own - lead) * confidence(chances, 10);
   }
-  base.leadMult = blend(lead, weight * confidence(c.continuationChances, 15));
+  // What the raiser bets when checked to matters as much as how often: one
+  // that gives up some turns but overbets the rest with air is still the one
+  // to check to, so a betting range wider than the norm offsets the lead.
+  const usage = street && streetChances > 0 ? streetBets : pooledBets;
+  const used = usage.small + usage.medium + usage.big;
+  const usedWidth =
+    used > 0
+      ? (usage.small * base.betWidth.small +
+          usage.medium * base.betWidth.medium +
+          usage.big * base.betWidth.big) /
+        used
+      : 1;
+  base.leadMult = blend(lead / Math.max(1, usedWidth), weight * confidence(c.continuationChances, 15));
 
   // A bettor who gives up everything but strong hands when raised is raised
   // light; one who never lets go is raised for value only. Until its raises

@@ -1173,6 +1173,24 @@ describe('hard exploits the observed human style', () => {
     expect(readOn('turn', cbetNoBarrel).leadMult).toBeGreaterThan(1.8);
   });
 
+  it('keeps checking to a raiser who barrels less often but overbets the barrels it makes', () => {
+    // Barrels 25 of 45 turns (the norm is 70%): with half-pot barrels it gives
+    // free cards, with overbets it fires its air at anyone who checks.
+    const barrels = (size: 'turnMediumBets' | 'turnBigBets'): HeroProfile => {
+      const profile = streetBettor(true);
+      Object.assign(profile.counters, {
+        turnContinuationChances: 45,
+        turnContinuationBets: 25,
+        turnMediumBets: 0,
+        turnBigBets: 0,
+        [size]: 25,
+      });
+      return profile;
+    };
+    expect(readOn('turn', barrels('turnMediumBets')).leadMult).toBeGreaterThan(1.05);
+    expect(readOn('turn', barrels('turnBigBets')).leadMult).toBeLessThan(0.8);
+  });
+
   it('raises the stabs of a player who folds to raises with any hand', () => {
     const flop = parseCards('Ks 7c 2d');
     const standard = responses('Qh Jd', flop, 0.3).raise;
