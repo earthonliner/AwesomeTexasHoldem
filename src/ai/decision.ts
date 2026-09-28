@@ -1208,11 +1208,19 @@ function decidePostflop(
     }
     let plan: BetPlan | null = null;
 
+    // Out of position with the previous street's aggressor still to act, the
+    // default is to check to the raiser: that range bets often enough that
+    // strong hands and good draws check-raise or check-call instead of leading.
+    // Leading everything strong leaves a checking range that must fold to any
+    // bet. Leads stay a minority, more on wet boards and on later streets.
+    const checkToRaiser =
+      !!ctx.villainWasAggressorLastStreet && !ctx.villainCheckedToMe && !ctx.wasAggressorLastStreet;
+    const leadShare = checkToRaiser
+      ? clamp((street === 'flop' ? 0.2 : street === 'turn' ? 0.3 : 0.45) + wet * 0.12, 0, 0.6)
+      : 1;
+
     if (strongValue || protectionValue) {
-      const dryEnoughToTrap = wet < 0.48 && features.category >= HandCategory.TwoPair;
-      const trapChance =
-        (exploit.trapMore ? 0.2 : 0) +
-        (dryEnoughToTrap && !inPosition && ctx.villainWasAggressorLastStreet ? 0.12 : 0);
+      const trapChance = exploit.trapMore ? 0.2 : 0;
       const protectionChance = clamp(
         0.36 +
           p.aggression * 0.34 +
@@ -1228,8 +1236,12 @@ function decidePostflop(
             ? 'polar-value'
             : 'thin-value'
           : 'protection-value',
-        checkLabel: strongValue ? 'value-trap' : 'protection-check',
-        chance: (strongValue ? 1 : protectionChance) * (1 - trapChance),
+        checkLabel: checkToRaiser
+          ? 'check-to-raiser'
+          : strongValue
+            ? 'value-trap'
+            : 'protection-check',
+        chance: (strongValue ? 1 : protectionChance) * (1 - trapChance) * leadShare,
         size: nutRange ? valueSize : thinSize,
         isBluff: false,
         foldEquityBonus: 0,
@@ -1364,8 +1376,8 @@ function decidePostflop(
     if (!plan && bluffFrequency > 0) {
       plan = {
         label: hasDraw ? 'candidate-semi-bluff' : 'blocker-bluff',
-        checkLabel: 'showdown-check',
-        chance: bluffFrequency,
+        checkLabel: checkToRaiser ? 'check-to-raiser' : 'showdown-check',
+        chance: bluffFrequency * leadShare,
         size: bluffSize,
         isBluff: true,
         foldEquityBonus: 0,
@@ -1436,6 +1448,9 @@ function decidePostflop(
   if (directOdds <= 0.15 && eq > 0.17) continueProbability = Math.max(0.86, continueProbability);
   reason.push(`odds=${directOdds.toFixed(2)}`, `edge=${edge.toFixed(2)}`);
   const evCall = eq * (potBefore + toCall) - toCall;
+  // We checked and face the only bet of the street: the spot the
+  // check-to-raiser line keeps its strong hands and good draws for.
+  const checkRaiseSpot = !!ctx.checkedThisStreet && (ctx.streetAggressionCount ?? 1) === 1;
 
   if (rng() < continueProbability) {
     if (
@@ -1451,7 +1466,7 @@ function decidePostflop(
       mayRaise &&
       eq >= valueThreshold + 0.08 &&
       features.category >= HandCategory.Pair &&
-      rng() < 0.48 + p.aggression * 0.32
+      rng() < 0.48 + p.aggression * 0.32 + (checkRaiseSpot && nutRange ? 0.1 : 0)
     ) {
       const size = nutRange ? valueSize : thinSize;
       const sized = sizeRaise(
@@ -1468,12 +1483,19 @@ function decidePostflop(
       const foldEquity = estimateFoldEquity(ctx, exploit, size, features, true);
       const deltaEV = aggressiveEV(sized, foldEquity) - evCall;
       if (nutRange || rng() < indifferenceGate(deltaEV)) {
-        return mk(sized.allIn ? 'allin' : 'raise', sized.amount, rng, false, [...reason, 'value-raise'], true);
+        return mk(
+          sized.allIn ? 'allin' : 'raise',
+          sized.amount,
+          rng,
+          false,
+          [...reason, checkRaiseSpot ? 'value-check-raise' : 'value-raise'],
+          true,
+        );
       }
       return mk('call', 0, rng, false, [...reason, 'value-call'], true);
     }
 
-    if (mayRaise && hasDraw && features.bluffQuality >= 0.35) {
+    if (mayRaise && hasDraw && features.bluffQuality >= (checkRaiseSpot ? 0.28 : 0.35)) {
       const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, true);
       const sized = sizeRaise(
         ctx,
@@ -1485,8 +1507,24 @@ function decidePostflop(
         inPosition ? 2.75 : 3.25,
       );
       const deltaEV = aggressiveEV(sized, foldEquity) - Math.max(evCall, 0);
-      if (rng() < bluffFrequency * 0.72 * indifferenceGate(deltaEV)) {
-        return mk(sized.allIn ? 'allin' : 'raise', sized.amount, rng, true, [...reason, 'equity-semi-raise'], true);
+      // Strong draws are the natural check-raise bluffs: they balance the
+      // value check-raises and keep equity when called.
+      const checkRaiseBluff = checkRaiseSpot
+        ? clamp(0.16 + features.bluffQuality * 0.4, 0, 0.45) *
+          exploit.foldPressure *
+          (street === 'turn' ? 0.7 : 1) *
+          (opponents > 1 ? 0.5 : 1)
+        : 0;
+      const semiRaiseChance = Math.max(bluffFrequency * 0.72, checkRaiseBluff);
+      if (rng() < semiRaiseChance * indifferenceGate(deltaEV)) {
+        return mk(
+          sized.allIn ? 'allin' : 'raise',
+          sized.amount,
+          rng,
+          true,
+          [...reason, checkRaiseSpot ? 'semi-bluff-check-raise' : 'equity-semi-raise'],
+          true,
+        );
       }
     }
     return mk('call', 0, rng, false, [...reason, 'equity-call'], true);
@@ -1562,6 +1600,11 @@ function estimateFoldEquity(
   foldEquity -= Math.max(0, ctx.liveOpponents - 1) * 0.1;
   foldEquity += clamp(size - 0.5, -0.25, 0.65) * 0.13;
   foldEquity += features.blockerScore * 0.08;
+  // A check-raise attacks a bet made into a check: a wide range (c-bets,
+  // stabs) that releases its air, unlike a bet that meets a lead.
+  if (isRaise && ctx.checkedThisStreet && (ctx.streetAggressionCount ?? 1) === 1) {
+    foldEquity += 0.06;
+  }
   if (ctx.facingCheckRaise) foldEquity -= 0.16;
   if ((ctx.streetAggressionCount ?? 0) >= 2) foldEquity -= 0.1;
   foldEquity *= exploit.foldPressure;

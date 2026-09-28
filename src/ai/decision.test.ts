@@ -1454,3 +1454,88 @@ describe('positional & stack-depth play (hard)', () => {
     expect(avg(nuts)).toBeGreaterThan(avg(thin) + 0.15);
   });
 });
+
+describe('check to the raiser, then check-raise (hard)', () => {
+  const board = parseCards('Kh 8c 3d');
+  const set = parseCards('8s 8d') as [Card, Card];
+
+  function leadRate(aggressorCheckedFirst: boolean): number {
+    let bets = 0;
+    const n = 60;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: set,
+          board,
+          street: 'flop',
+          canCheck: true,
+          toCall: 0,
+          potBefore: 13,
+          minRaiseTo: 2,
+          positionFactor: aggressorCheckedFirst ? 1 : 0,
+          villainWasAggressorLastStreet: true,
+          villainCheckedToMe: aggressorCheckedFirst,
+          wasAggressorLastStreet: false,
+          inPositionVsAggressor: aggressorCheckedFirst,
+          preflopRaised: true,
+          preflopPotType: 'singleRaised',
+        }),
+        rng: seeded(s + 6000),
+        iterations: 150,
+      });
+      if (d.action === 'raise' || d.action === 'allin') bets++;
+    }
+    return bets / n;
+  }
+
+  it('checks a set to the raiser instead of leading into it', () => {
+    const lead = leadRate(false);
+    expect(lead).toBeLessThan(0.4);
+    // Once the raiser has checked, the same set bets for value.
+    expect(leadRate(true)).toBeGreaterThan(lead + 0.4);
+  });
+
+  function raiseRate(hole: [Card, Card], flop: Card[], checkedFirst: boolean): number {
+    let raises = 0;
+    const n = 80;
+    for (let s = 0; s < n; s++) {
+      const d = decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole,
+          board: flop,
+          street: 'flop',
+          potBefore: 19,
+          toCall: 6,
+          currentBet: 6,
+          minRaiseTo: 12,
+          positionFactor: checkedFirst ? 0 : 1,
+          checkedThisStreet: checkedFirst,
+          streetAggressionCount: 1,
+          betToPot: 0.46,
+          villainWasAggressorLastStreet: true,
+          inPositionVsAggressor: !checkedFirst,
+          preflopRaised: true,
+          preflopPotType: 'singleRaised',
+        }),
+        rng: seeded(s + 7000),
+        iterations: 150,
+      });
+      if (d.action === 'raise' || d.action === 'allin') raises++;
+    }
+    return raises / n;
+  }
+
+  it('check-raises a set and a strong draw against the c-bet', () => {
+    expect(raiseRate(set, board, true)).toBeGreaterThan(0.5);
+    const comboDraw = parseCards('Jh Th') as [Card, Card];
+    const wetFlop = parseCards('9h 8c 2h');
+    const xr = raiseRate(comboDraw, wetFlop, true);
+    expect(xr).toBeGreaterThan(0.2);
+    // Facing the same bet in position is a call-first spot for the draw.
+    expect(xr).toBeGreaterThan(raiseRate(comboDraw, wetFlop, false));
+  });
+});
