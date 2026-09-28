@@ -3,7 +3,38 @@ import type { GameState } from '../engine/gameTypes';
 import { evaluateHand } from '../engine/handEvaluator';
 import { HandCategory } from '../engine/types';
 import { tablePositionFor } from './line';
-import type { HeroProfile } from './types';
+import type { HeroProfile, PostflopStreet, StreetBetCounter } from './types';
+
+export const POSTFLOP_STREETS: readonly PostflopStreet[] = ['flop', 'turn', 'river'];
+
+const STREET_BET_COUNTERS: readonly StreetBetCounter[] = [
+  'BetChances',
+  'SmallBets',
+  'MediumBets',
+  'BigBets',
+  'ContinuationChances',
+  'ContinuationBets',
+];
+
+export type StreetCounterKey = `${PostflopStreet}${StreetBetCounter}`;
+
+export function streetCounterKey(street: PostflopStreet, counter: StreetBetCounter): StreetCounterKey {
+  return `${street}${counter}`;
+}
+
+/**
+ * Prior for the hero's fold rate to an opening river bet: the hard-AI
+ * population rate (6-max, 100bb), so an unread player reads as the norm.
+ */
+export const RIVER_FOLD_PRIOR = 0.42;
+
+function emptyStreetCounters(): Record<StreetCounterKey, number> {
+  const out = {} as Record<StreetCounterKey, number>;
+  for (const street of POSTFLOP_STREETS) {
+    for (const counter of STREET_BET_COUNTERS) out[streetCounterKey(street, counter)] = 0;
+  }
+  return out;
+}
 
 export function emptyHeroProfile(): HeroProfile {
   return {
@@ -15,6 +46,7 @@ export function emptyHeroProfile(): HeroProfile {
     bluffCaught: 0.3,
     wentToShowdown: 0.3,
     foldToCbet: 0.5,
+    foldToRiverBet: RIVER_FOLD_PRIOR,
     counters: {
       handsDealt: 0,
       voluntaryActions: 0,
@@ -40,8 +72,20 @@ export function emptyHeroProfile(): HeroProfile {
       continuationBets: 0,
       raisesFaced: 0,
       raisesFolded: 0,
+      riverBetsFaced: 0,
+      riverBetFolds: 0,
+      ...emptyStreetCounters(),
     },
   };
+}
+
+export interface StreetOpeningBets {
+  opportunities: number;
+  small: number;
+  medium: number;
+  big: number;
+  continuationChances: number;
+  continuationBets: number;
 }
 
 export interface HandSummary {
@@ -63,20 +107,15 @@ export interface HandSummary {
    */
   riverBetShown?: { big: boolean; weak: boolean } | null;
   /**
-   * Post-flop streets where the hero could open the betting, its opening bets
-   * by size, and the subset of chances where it had driven the previous street
-   * (continuation bets: c-bets and barrels).
+   * Per post-flop street: whether the hero could open the betting, its opening
+   * bet by size, and whether that chance followed its own aggression on the
+   * previous street (continuation bets: c-bets and barrels).
    */
-  openingBets?: {
-    opportunities: number;
-    small: number;
-    medium: number;
-    big: number;
-    continuationChances: number;
-    continuationBets: number;
-  };
+  openingBets?: Record<PostflopStreet, StreetOpeningBets>;
   /** Post-flop streets where the hero's bet or raise was raised, and how often it folded. */
   raisedAfterBetting?: { faced: number; folded: number };
+  /** The hero faced the opening bet of the river (not a raise of its own bet). */
+  riverBetFaced?: { folded: boolean } | null;
 }
 
 const AGGRESSIVE = new Set(['bet', 'raise', 'allin']);
@@ -185,28 +224,45 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     }
   }
 
-  const openingBets = {
+  const emptyStreet = (): StreetOpeningBets => ({
     opportunities: 0,
     small: 0,
     medium: 0,
     big: 0,
     continuationChances: 0,
     continuationBets: 0,
+  });
+  const openingBets: Record<PostflopStreet, StreetOpeningBets> = {
+    flop: emptyStreet(),
+    turn: emptyStreet(),
+    river: emptyStreet(),
   };
   const streets = ['preflop', 'flop', 'turn', 'river'] as const;
   for (let s = 1; s < streets.length; s++) {
-    const first = actions.find((a) => a.street === streets[s] && a.playerId === playerId);
+    const street = streets[s] as PostflopStreet;
+    const first = actions.find((a) => a.street === street && a.playerId === playerId);
     if (!first || first.toCall > 0) continue;
     const bet = AGGRESSIVE.has(first.type);
-    openingBets.opportunities += 1;
-    if (bet) openingBets[betSizeClass(wagerToPot(first))] += 1;
+    const tally = openingBets[street];
+    tally.opportunities += 1;
+    if (bet) tally[betSizeClass(wagerToPot(first))] += 1;
     const lastAggressor = [...actions]
       .reverse()
       .find((a) => a.street === streets[s - 1] && AGGRESSIVE.has(a.type));
     if (lastAggressor?.playerId === playerId) {
-      openingBets.continuationChances += 1;
-      if (bet) openingBets.continuationBets += 1;
+      tally.continuationChances += 1;
+      if (bet) tally.continuationBets += 1;
     }
+  }
+
+  let riverBetFaced: HandSummary['riverBetFaced'] = null;
+  const river = actions.filter((a) => a.street === 'river');
+  const riverOpen = river.findIndex((a) => AGGRESSIVE.has(a.type));
+  if (riverOpen >= 0 && river[riverOpen].playerId !== playerId) {
+    const response = river
+      .slice(riverOpen + 1)
+      .find((a) => a.playerId === playerId && a.toCall > 0);
+    if (response) riverBetFaced = { folded: response.type === 'fold' };
   }
 
   const raisedAfterBetting = { faced: 0, folded: 0 };
@@ -235,6 +291,7 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     riverBetShown,
     openingBets,
     raisedAfterBetting,
+    riverBetFaced,
   };
 }
 
@@ -290,16 +347,29 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
     }
   }
   if (summary.openingBets) {
-    c.betOpportunities += summary.openingBets.opportunities;
-    c.smallBets += summary.openingBets.small;
-    c.mediumBets += summary.openingBets.medium;
-    c.bigBets += summary.openingBets.big;
-    c.continuationChances += summary.openingBets.continuationChances;
-    c.continuationBets += summary.openingBets.continuationBets;
+    for (const street of POSTFLOP_STREETS) {
+      const t = summary.openingBets[street];
+      c.betOpportunities += t.opportunities;
+      c.smallBets += t.small;
+      c.mediumBets += t.medium;
+      c.bigBets += t.big;
+      c.continuationChances += t.continuationChances;
+      c.continuationBets += t.continuationBets;
+      c[streetCounterKey(street, 'BetChances')] += t.opportunities;
+      c[streetCounterKey(street, 'SmallBets')] += t.small;
+      c[streetCounterKey(street, 'MediumBets')] += t.medium;
+      c[streetCounterKey(street, 'BigBets')] += t.big;
+      c[streetCounterKey(street, 'ContinuationChances')] += t.continuationChances;
+      c[streetCounterKey(street, 'ContinuationBets')] += t.continuationBets;
+    }
   }
   if (summary.raisedAfterBetting) {
     c.raisesFaced += summary.raisedAfterBetting.faced;
     c.raisesFolded += summary.raisedAfterBetting.folded;
+  }
+  if (summary.riverBetFaced) {
+    c.riverBetsFaced += 1;
+    if (summary.riverBetFaced.folded) c.riverBetFolds += 1;
   }
 
   const ratio = (num: number, den: number, prior: number, priorWeight: number) =>
@@ -314,6 +384,7 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
     bluffCaught: ratio(c.riverBetsWeak, c.riverBetsShown, 0.3, 5),
     wentToShowdown: ratio(c.showdowns, c.handsDealt, 0.3, 8),
     foldToCbet: ratio(c.cbetFolded, c.cbetFaced, 0.5, 5),
+    foldToRiverBet: ratio(c.riverBetFolds, c.riverBetsFaced, RIVER_FOLD_PRIOR, 8),
     counters: c,
   };
 }

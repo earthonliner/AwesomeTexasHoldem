@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   emptyHeroProfile,
+  RIVER_FOLD_PRIOR,
   summarizePlayerHand,
   updateHeroProfile,
   type HandSummary,
@@ -160,19 +161,72 @@ describe('updateHeroProfile — new exploit dimensions', () => {
 
     const summary = summarizePlayerHand(game, 0);
     // Only the flop follows the hero's own aggression; the river follows the villain's lead.
+    const none = { opportunities: 0, small: 0, medium: 0, big: 0, continuationChances: 0, continuationBets: 0 };
     expect(summary.openingBets).toEqual({
-      opportunities: 2,
-      small: 1,
-      medium: 0,
-      big: 1,
-      continuationChances: 1,
-      continuationBets: 1,
+      flop: { ...none, opportunities: 1, small: 1, continuationChances: 1, continuationBets: 1 },
+      turn: none,
+      river: { ...none, opportunities: 1, big: 1 },
     });
     const p = updateHeroProfile(emptyHeroProfile(), summary);
     expect(p.counters.betOpportunities).toBe(2);
     expect(p.counters.smallBets).toBe(1);
     expect(p.counters.bigBets).toBe(1);
     expect(p.counters.continuationChances).toBe(1);
+    expect(p.counters.flopBetChances).toBe(1);
+    expect(p.counters.flopSmallBets).toBe(1);
+    expect(p.counters.flopContinuationBets).toBe(1);
+    expect(p.counters.turnBetChances).toBe(0);
+    expect(p.counters.riverBetChances).toBe(1);
+    expect(p.counters.riverBigBets).toBe(1);
+    expect(p.counters.riverContinuationChances).toBe(0);
+  });
+
+  it('records folds to the opening river bet, not to a raise of its own bet', () => {
+    const hand = (river: ReturnType<typeof action>[]) =>
+      ({
+        players: [
+          { id: 0, isHero: true, hole: parseCards('Ah Qd'), folded: false, sittingOut: false },
+          { id: 1, isHero: false, hole: parseCards('As Ks'), folded: false, sittingOut: false },
+        ],
+        board: parseCards('Ac 8c 3d 6s 2h'),
+        history: [
+          action('preflop', 0, 'raise', 6, 3, 1),
+          action('preflop', 1, 'call', 4, 9, 4),
+          action('flop', 1, 'check', 0, 12, 0),
+          action('flop', 0, 'check', 0, 12, 0),
+          action('turn', 1, 'check', 0, 12, 0),
+          action('turn', 0, 'check', 0, 12, 0),
+          ...river,
+        ],
+        revealed: [],
+        buttonIndex: 0,
+        bigBlind: 2,
+      }) as unknown as GameState;
+
+    const folded = hand([action('river', 1, 'bet', 8, 12, 0), action('river', 0, 'fold', 0, 20, 8)]);
+    expect(summarizePlayerHand(folded, 0).riverBetFaced).toEqual({ folded: true });
+    // The bettor itself faced nothing.
+    expect(summarizePlayerHand(folded, 1).riverBetFaced).toBeNull();
+
+    const checkRaised = hand([
+      action('river', 1, 'check', 0, 12, 0),
+      action('river', 0, 'bet', 8, 12, 0),
+      action('river', 1, 'raise', 24, 20, 8),
+      action('river', 0, 'fold', 0, 44, 16),
+    ]);
+    // Folding to a check-raise is the raises-faced read, not this one.
+    expect(summarizePlayerHand(checkRaised, 0).riverBetFaced).toBeNull();
+
+    const called = hand([
+      action('river', 1, 'bet', 8, 12, 0),
+      action('river', 0, 'call', 8, 20, 8),
+    ]);
+    let p = updateHeroProfile(emptyHeroProfile(), summarizePlayerHand(folded, 0));
+    p = updateHeroProfile(p, summarizePlayerHand(called, 0));
+    expect(p.counters.riverBetsFaced).toBe(2);
+    expect(p.counters.riverBetFolds).toBe(1);
+    expect(p.foldToRiverBet).toBeGreaterThan(RIVER_FOLD_PRIOR);
+    expect(p.foldToRiverBet).toBeLessThan(0.5);
   });
 
   it('counts the raises met after betting and the folds to them', () => {

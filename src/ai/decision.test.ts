@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { actionEV, decide } from './decision';
+import { buildDecisionContext } from './context';
+import { actionEV, computeExploit, decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
-import { emptyHeroProfile } from './profile';
-import type { DecisionContext, HeroProfile, Personality } from './types';
+import { emptyHeroProfile, RIVER_FOLD_PRIOR } from './profile';
+import type { AIDecision, DecisionContext, HeroProfile, Personality } from './types';
 import { parseCards, makeDeck, shuffle } from '../engine/deck';
-import type { Card } from '../engine/types';
+import { applyAction, startHand, type SeatInit } from '../engine/game';
+import { BB_CHIPS } from '../engine/gameTypes';
+import type { ActionType, Card } from '../engine/types';
 
 function seeded(seed: number): () => number {
   let a = seed >>> 0;
@@ -1034,6 +1037,7 @@ describe('hard exploits the observed human style', () => {
     board: Card[],
     betToPot: number,
     profile?: HeroProfile,
+    extra: Partial<DecisionContext> = {},
   ): { fold: number; raise: number } {
     let folds = 0;
     let raises = 0;
@@ -1058,6 +1062,7 @@ describe('hard exploits the observed human style', () => {
           aggressorIsHero: true,
           checkedThisStreet: true,
           preflopRaised: true,
+          ...extra,
         }),
         rng: seeded(s + 950),
         iterations: 200,
@@ -1084,6 +1089,158 @@ describe('hard exploits the observed human style', () => {
     expect(overbettor).toBeLessThan(standard - 0.3);
     // The read is per size: a small-bet habit says nothing about overbets.
     expect(foldRate('6h 6d', turn, 1.2, bettor('smallBets'))).toBeGreaterThan(overbettor + 0.3);
+  });
+
+  it('reads a short all-in by the sizes the player bets, not the size it was left with', () => {
+    // 24 chips into a 40-chip pot are all it has left: it could not overbet.
+    const turn = parseCards('Ks 9c 4d 2h');
+    const shove: Partial<DecisionContext> = {
+      maxRaiseTo: 24,
+      winnablePot: 88,
+      allIn: { opponents: 1, idle: 0, idleShare: 1, bettor: true, callers: 0, pot: 88, aggressor: true },
+    };
+    const overbettorBet = foldRate('8h 8d', turn, 0.6, bettor('bigBets'));
+    const overbettorShove = foldRate('8h 8d', turn, 0.6, bettor('bigBets'), shove);
+    expect(overbettorShove).toBeLessThan(overbettorBet - 0.3);
+    // A player who bets this size anyway is read by it, all-in or not.
+    const halfPotShove = foldRate('8h 8d', turn, 0.6, bettor('mediumBets'), shove);
+    expect(Math.abs(halfPotShove - foldRate('8h 8d', turn, 0.6, bettor('mediumBets')))).toBeLessThan(0.1);
+  });
+
+  // A flop c-bettor who bets half pot at 70% of its flop chances and switches
+  // to overbets on the turn and river; `split: false` is the same history seen
+  // only through the pooled counters (as a profile saved before the split).
+  const streetBettor = (split: boolean): HeroProfile => {
+    const counters = {
+      ...emptyHeroProfile().counters,
+      handsDealt: 120,
+      betOpportunities: 150,
+      mediumBets: 49,
+      bigBets: 55,
+      continuationChances: 90,
+      continuationBets: 70,
+    };
+    if (split) {
+      Object.assign(counters, {
+        flopBetChances: 70,
+        flopMediumBets: 49,
+        turnBetChances: 45,
+        turnBigBets: 30,
+        riverBetChances: 35,
+        riverBigBets: 25,
+      });
+    }
+    return { ...emptyHeroProfile(), hands: 120, counters };
+  };
+  const readOn = (street: 'flop' | 'turn' | 'river', profile: HeroProfile) =>
+    computeExploit('hard', ctx({ hole: parseCards('Qh Jd') as [Card, Card], street }), profile);
+
+  it('reads opening-bet width per street, so later overbets do not dilute the flop c-bet read', () => {
+    const pooled = readOn('flop', streetBettor(false)).betWidth.medium;
+    const flop = readOn('flop', streetBettor(true)).betWidth.medium;
+    expect(flop).toBeGreaterThan(1.5);
+    expect(flop).toBeGreaterThan(pooled + 0.3);
+    const turn = readOn('turn', streetBettor(true)).betWidth;
+    expect(turn.big).toBeGreaterThan(1.8);
+    // It never bets half pot on the turn, so such a bet is no wide stab.
+    expect(turn.medium).toBeLessThan(1);
+  });
+
+  it('defends wider against the flop c-bets of that per-street profile', () => {
+    const flop = parseCards('Ks 8c 3d');
+    const hands = ['Qh Jd', 'Ah 5d', 'Th 9h', '7h 7d', 'Jc Tc'];
+    const total = (profile: HeroProfile) =>
+      hands.reduce((sum, h) => sum + foldRate(h, flop, 0.5, profile), 0) / hands.length;
+    expect(total(streetBettor(true))).toBeLessThan(total(streetBettor(false)) - 0.05);
+  });
+
+  it('does not read a rare standard-size river bettor as wide', () => {
+    // Bets 20% of river chances, all half pot: fewer bets than the population,
+    // at a size the population seldom uses on the river.
+    const valueBettor: HeroProfile = {
+      ...emptyHeroProfile(),
+      hands: 150,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 150,
+        betOpportunities: 120,
+        mediumBets: 24,
+        riverBetChances: 120,
+        riverMediumBets: 24,
+      },
+    };
+    expect(readOn('river', valueBettor).betWidth.medium).toBeLessThan(1);
+  });
+
+  // A quarter-pot stab at 94% of its flop, 80% of its turn and 90% of its river
+  // chances; the population bets a third of flops and half of turns and rivers.
+  const stabber = (riverChances: number, riverStabs: number): HeroProfile => ({
+    ...emptyHeroProfile(),
+    hands: 400,
+    counters: {
+      ...emptyHeroProfile().counters,
+      handsDealt: 400,
+      betOpportunities: 148 + riverChances,
+      smallBets: 130 + riverStabs,
+      flopBetChances: 84,
+      flopSmallBets: 79,
+      turnBetChances: 64,
+      turnSmallBets: 51,
+      riverBetChances: riverChances,
+      riverSmallBets: riverStabs,
+    },
+  });
+
+  it('reads a player who stabs nearly every turn and river as wide there too', () => {
+    expect(readOn('turn', stabber(51, 46)).betWidth.small).toBeGreaterThan(1.65);
+    const river = readOn('river', stabber(51, 46)).betWidth;
+    expect(river.small).toBeGreaterThan(1.8);
+    // It never overbets: a sudden overbet is out of character, not a wide stab.
+    expect(river.big).toBeLessThan(1);
+    expect(river.medium).toBeLessThan(1);
+  });
+
+  it('starts a street with few chances of its own from the pooled read', () => {
+    // Few hands reach the river: 11 stabs in 12 river chances say little yet,
+    // but its flop and turn habit already does.
+    expect(readOn('river', stabber(12, 11)).betWidth.small).toBeGreaterThan(1.85);
+  });
+
+  it('reads flop c-bets and turn barrels as separate habits', () => {
+    const cbetNoBarrel: HeroProfile = {
+      ...emptyHeroProfile(),
+      hands: 120,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 120,
+        continuationChances: 80,
+        continuationBets: 50,
+        flopContinuationChances: 50,
+        flopContinuationBets: 45,
+        turnContinuationChances: 30,
+        turnContinuationBets: 5,
+      },
+    };
+    expect(readOn('flop', cbetNoBarrel).leadMult).toBeLessThan(0.7);
+    expect(readOn('turn', cbetNoBarrel).leadMult).toBeGreaterThan(1.8);
+  });
+
+  it('keeps checking to a raiser who barrels less often but overbets the barrels it makes', () => {
+    // Barrels 25 of 45 turns (the norm is 70%): with half-pot barrels it gives
+    // free cards, with overbets it fires its air at anyone who checks.
+    const barrels = (size: 'turnMediumBets' | 'turnBigBets'): HeroProfile => {
+      const profile = streetBettor(true);
+      Object.assign(profile.counters, {
+        turnContinuationChances: 45,
+        turnContinuationBets: 25,
+        turnMediumBets: 0,
+        turnBigBets: 0,
+        [size]: 25,
+      });
+      return profile;
+    };
+    expect(readOn('turn', barrels('turnMediumBets')).leadMult).toBeGreaterThan(1.05);
+    expect(readOn('turn', barrels('turnBigBets')).leadMult).toBeLessThan(0.8);
   });
 
   it('raises the stabs of a player who folds to raises with any hand', () => {
@@ -1650,5 +1807,249 @@ describe('check to the raiser, then check-raise (hard)', () => {
     expect(xr).toBeGreaterThan(0.2);
     // Facing the same bet in position is a call-first spot for the draw.
     expect(xr).toBeGreaterThan(raiseRate(comboDraw, wetFlop, false));
+  });
+});
+
+describe('all-in opponents and side pots (hard)', () => {
+  // A 20bb shove before the flop was called by us and by a deep player who
+  // acts after us: the whole 120-chip pot is a main pot the shover contests
+  // without being able to fold, bet or be checked to.
+  const flop = parseCards('Kd 8s 3c');
+  const shover = { opponents: 1, idle: 1, idleShare: 1, bettor: false, callers: 0, pot: 120, aggressor: true };
+  const spot = (hole: string, partial: Partial<DecisionContext> = {}): DecisionContext =>
+    ctx({
+      hole: parseCards(hole) as [Card, Card],
+      board: flop,
+      street: 'flop',
+      canCheck: true,
+      toCall: 0,
+      liveOpponents: 2,
+      potBefore: 120,
+      stack: 160,
+      maxRaiseTo: 160,
+      minRaiseTo: 2,
+      effectiveStack: 160,
+      totalCommitted: 40,
+      positionFactor: 0.3,
+      playersBehind: 1,
+      preflopRaised: true,
+      preflopPotType: 'singleRaised',
+      villainWasAggressorLastStreet: true,
+      inPositionVsAggressor: false,
+      winnablePot: 120,
+      allIn: shover,
+      ...partial,
+    });
+  // The deep player bets 60 into the main pot after we check.
+  const facingSideBet = (hole: string, partial: Partial<DecisionContext> = {}) =>
+    spot(hole, {
+      canCheck: false,
+      toCall: 60,
+      currentBet: 60,
+      potBefore: 180,
+      minRaiseTo: 120,
+      playersBehind: 0,
+      checkedThisStreet: true,
+      streetAggressionCount: 1,
+      betToPot: 0.5,
+      winnablePot: 240,
+      allIn: { ...shover, aggressor: false },
+      ...partial,
+    });
+  const rate = (
+    make: () => DecisionContext,
+    match: (d: AIDecision) => boolean,
+    iterations: number,
+    seed: number,
+  ): number => {
+    let hits = 0;
+    const n = 60;
+    for (let s = 0; s < n; s++) {
+      const d = decide({ personality: tag, difficulty: 'hard', ctx: make(), rng: seeded(seed + s), iterations });
+      if (match(d)) hits++;
+    }
+    return hits / n;
+  };
+  const bets = (d: AIDecision) => d.action === 'raise' || d.action === 'allin';
+  const continues = (d: AIDecision) => d.action !== 'fold';
+
+  it('bets top pair into the live player instead of checking to an all-in raiser', () => {
+    const allInRaiser = rate(() => spot('Kh Jd'), bets, 150, 8000);
+    const liveRaiser = rate(
+      () => spot('Kh Jd', { allIn: undefined, winnablePot: undefined }),
+      bets,
+      150,
+      8000,
+    );
+    expect(allInRaiser).toBeGreaterThan(0.8);
+    expect(liveRaiser).toBeLessThan(allInRaiser - 0.5);
+  });
+
+  it('does not bluff when the pot is a main pot the all-in player cannot fold', () => {
+    for (const air of ['7h 6h', 'Qh Jh']) {
+      expect(rate(() => spot(air), bets, 150, 8100)).toBeLessThan(0.08);
+    }
+  });
+
+  it('calls the live bettor wider with a hand that still beats the all-in range', () => {
+    // Calling also keeps our share of the main pot, won against the shover's
+    // wide range rather than the bettor's strong one.
+    const layered = rate(() => facingSideBet('Ah 3d'), continues, 200, 2000);
+    const pooled = rate(
+      () => facingSideBet('Ah 3d', { allIn: undefined, winnablePot: undefined }),
+      continues,
+      200,
+      2000,
+    );
+    expect(layered).toBeGreaterThan(0.25);
+    expect(layered).toBeGreaterThan(pooled + 0.15);
+  });
+
+  it('calls all-in for less at the price of the chips it can win', () => {
+    // 20 chips behind facing 100 into 60: calling risks 20 to win 100 (20%),
+    // not 100 to win 260.
+    const short = (hole: string) =>
+      ctx({
+        hole: parseCards(hole) as [Card, Card],
+        board: flop,
+        street: 'flop',
+        toCall: 100,
+        currentBet: 100,
+        potBefore: 160,
+        stack: 20,
+        maxRaiseTo: 20,
+        effectiveStack: 20,
+        totalCommitted: 30,
+        canRaise: false,
+        streetAggressionCount: 1,
+        preflopRaised: true,
+        preflopPotType: 'singleRaised',
+        winnablePot: 100,
+      });
+    expect(rate(() => short('5h 5d'), continues, 150, 8300)).toBeGreaterThan(0.7);
+    expect(rate(() => short('Qh Jh'), continues, 150, 8300)).toBeLessThan(0.45);
+  });
+
+  // Pre-flop at a 6-max table, button on seat 5 (UTG is seat 2), 100bb unless given.
+  const preflop = (stacks: Record<number, number>, ...actions: [ActionType, number?][]) => {
+    const table: SeatInit[] = Array.from({ length: 6 }, (_, i) => ({
+      id: i,
+      name: `P${i}`,
+      isHero: false,
+      stack: (stacks[i] ?? 100) * BB_CHIPS,
+    }));
+    const config = { seatCount: 6, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' } as const;
+    const game = actions.reduce(
+      (g, [type, amount = 0]) => applyAction(g, { type, amount }),
+      startHand(config, table, 5, 1, () => 0.42),
+    );
+    return buildDecisionContext(game, game.toAct);
+  };
+  const withHole = (c: DecisionContext, hole: string): DecisionContext => ({
+    ...c,
+    hole: parseCards(hole) as [Card, Card],
+  });
+
+  it('plays a short all-in raise as a jam even with deep players behind', () => {
+    // UTG shoves 18bb and it folds to the button; both blinds have 100bb.
+    const jam = preflop({ 2: 18 }, ['allin'], ['fold'], ['fold']);
+    expect(jam.effectiveStack).toBe(100 * BB_CHIPS);
+    // A raise cannot fold the shover: only hands that want to isolate raise.
+    expect(rate(() => withHole(jam, 'Kc Qc'), bets, 850, 9400)).toBe(0);
+    expect(rate(() => withHole(jam, 'As Ah'), (d) => d.reason.includes('pf-jam-isolate'), 850, 9400)).toBe(1);
+  });
+
+  it('calls a pre-flop all-in for less at the price of the chips it can win', () => {
+    // UTG opens 3bb, two players call and the button shoves 100bb: the big
+    // blind's last 5bb win a 21.5bb main pot (23%), not 99bb into 209.5bb (47%).
+    const dead = preflop({ 1: 6 }, ['raise', 3 * BB_CHIPS], ['call'], ['call'], ['allin'], ['fold']);
+    expect(dead.winnablePot).toBe(21.5 * BB_CHIPS);
+    expect(rate(() => withHole(dead, 'Kc Qc'), continues, 850, 9400)).toBeGreaterThan(0.9);
+    expect(rate(() => withHole(dead, '7d 2c'), continues, 850, 9400)).toBe(0);
+  });
+});
+
+describe('river bluffs linked to the bet size (hard)', () => {
+  // A missed J-high heads-up on the river, checked to us in position.
+  const board = parseCards('Ks 8d 3c 2h 5s');
+  const river = (
+    line: 'aggressor' | 'afterCheck',
+    partial: Partial<DecisionContext> = {},
+  ): DecisionContext =>
+    ctx({
+      hole: parseCards('Jh Th') as [Card, Card],
+      board,
+      street: 'river',
+      canCheck: true,
+      toCall: 0,
+      potBefore: 40,
+      stack: 160,
+      maxRaiseTo: 160,
+      minRaiseTo: 2,
+      effectiveStack: 160,
+      totalCommitted: 20,
+      positionFactor: 1,
+      inPositionVsAggressor: true,
+      checkedThisStreet: true,
+      preflopRaised: true,
+      preflopPotType: 'singleRaised',
+      ...(line === 'aggressor'
+        ? { wasAggressorLastStreet: true }
+        : { previousStreetCheckedThrough: true }),
+      ...partial,
+    });
+  const sample = (make: () => DecisionContext, seed: number, heroProfile?: HeroProfile) =>
+    Array.from({ length: 80 }, (_, s) =>
+      decide({ personality: tag, difficulty: 'hard', ctx: make(), rng: seeded(seed + s), iterations: 150, heroProfile }),
+    );
+  const betRate = (ds: AIDecision[]) =>
+    ds.filter((d) => d.action === 'raise' || d.action === 'allin').length / ds.length;
+
+  it('bets its air as the aggressor, and less after a checked-through turn', () => {
+    const aggressor = betRate(sample(() => river('aggressor'), 9100));
+    const afterCheck = betRate(sample(() => river('afterCheck'), 9100));
+    expect(aggressor).toBeGreaterThan(0.7);
+    expect(afterCheck).toBeGreaterThan(0.2);
+    expect(afterCheck).toBeLessThan(aggressor - 0.2);
+  });
+
+  it('keeps stabbing a multiway river that checked through, less often than heads-up', () => {
+    const spot = (opponents: number) => () =>
+      river('afterCheck', { liveOpponents: opponents, playersBehind: 0 });
+    const headsUp = betRate(sample(spot(1), 9500));
+    const threeWay = betRate(sample(spot(2), 9500));
+    const fourWay = betRate(sample(spot(3), 9500));
+    expect(threeWay).toBeGreaterThan(0.2);
+    expect(threeWay).toBeLessThan(headsUp);
+    expect(fourWay).toBeLessThan(threeWay);
+  });
+
+  it('splits the bluffs between the thin and the polar size', () => {
+    const bluffs = sample(() => river('aggressor'), 9100).filter((d) => d.action === 'raise');
+    const thin = bluffs.filter((d) => d.reason.endsWith('river-thin-bluff'));
+    const polar = bluffs.filter((d) => d.reason.endsWith('river-polar-bluff'));
+    expect(thin.length).toBeGreaterThan(bluffs.length * 0.3);
+    expect(polar.length).toBeGreaterThan(bluffs.length * 0.15);
+    expect(Math.max(...thin.map((d) => d.amount))).toBeLessThan(Math.min(...polar.map((d) => d.amount)));
+  });
+
+  it('bluffs a player who folds to river bets more, and a river station not at all', () => {
+    const read = (faced: number, folds: number): HeroProfile => {
+      const base = emptyHeroProfile();
+      return {
+        ...base,
+        hands: 120,
+        foldToRiverBet: (folds + RIVER_FOLD_PRIOR * 8) / (faced + 8),
+        counters: { ...base.counters, handsDealt: 120, riverBetsFaced: faced, riverBetFolds: folds },
+      };
+    };
+    const folder = read(30, 24);
+    const station = read(30, 2);
+    const spot = () => river('afterCheck', { aggressorIsHero: true });
+    expect(computeExploit('hard', spot(), folder).riverFold).toBeGreaterThan(1.4);
+    expect(computeExploit('hard', spot(), station).riverFold).toBeLessThan(0.6);
+    const unread = betRate(sample(spot, 9300));
+    expect(betRate(sample(spot, 9300, folder))).toBeGreaterThan(unread + 0.1);
+    expect(betRate(sample(spot, 9300, station))).toBeLessThan(0.05);
   });
 });

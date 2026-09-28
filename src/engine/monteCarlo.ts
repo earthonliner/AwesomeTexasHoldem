@@ -194,6 +194,18 @@ export interface RangeEquityOptions {
    */
   continueShare?: number;
   /**
+   * Opponents who went all-in before this street and took no action on it.
+   * Nothing since has narrowed their range, so they hold their whole
+   * (pre-flop filtered) range, or its strongest `idleAllInShare` when they
+   * committed after the flop. They are sampled last, after the unacted seats.
+   */
+  idleAllInOpponents?: number;
+  idleAllInShare?: number;
+  /** The bettor (first role) is all-in. */
+  bettorAllIn?: boolean;
+  /** That many of the capped callers called or bet all-in on this street. */
+  allInCallers?: number;
+  /**
    * Pre-flop combinations still plausible after the observed pre-flop line.
    * A 3-bet pot can pass ~0.12, while a limped pot can pass ~0.7.
    */
@@ -212,6 +224,14 @@ export type PreflopRanking = 'playability' | 'allin';
 export interface RangeEquityResult extends EquityResult {
   /** Number of two-card combos in the assumed value range. */
   rangeCombos: number;
+  /**
+   * With all-in opponents in the sample: equity against only the opponents who
+   * can still act (the side pot they contest), and against only the all-in
+   * ones (what the main pot is worth once everyone else folds). Undefined when
+   * that group is empty.
+   */
+  equityVsLive?: number;
+  equityVsAllIn?: number;
 }
 
 interface RankedCombo {
@@ -454,23 +474,40 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   }
 
   // Opponent roles, in sampling order: bettor(s) from the value/bluff range,
-  // then capped callers, then checkers, then players still to act.
+  // then capped callers, then checkers, then players still to act, then
+  // players who were already all-in before this street.
+  const idleAllIn = Math.min(Math.max(0, opts.idleAllInOpponents ?? 0), opponentCount);
   const unactedOpponents = Math.min(
     Math.max(0, opts.unactedOpponents ?? 0),
-    opponentCount,
+    opponentCount - idleAllIn,
   );
   const checkedOpponents = Math.min(
     Math.max(0, opts.checkedOpponents ?? 0),
-    opponentCount - unactedOpponents,
+    opponentCount - idleAllIn - unactedOpponents,
   );
   // Callers only exist next to a bettor, so at least one value seat remains.
   const cappedCallers = Math.min(
     Math.max(0, opts.cappedCallers ?? 0),
-    Math.max(0, opponentCount - unactedOpponents - checkedOpponents - 1),
+    Math.max(0, opponentCount - idleAllIn - unactedOpponents - checkedOpponents - 1),
   );
+  const allInCallers = Math.min(Math.max(0, opts.allInCallers ?? 0), cappedCallers);
   const continueShare = Math.min(1, Math.max(0.05, opts.continueShare ?? 1));
   const topSlice = (pool: [Card, Card][], share: number): [Card, Card][] =>
     share >= 1 ? pool : pool.slice(0, Math.max(1, Math.round(pool.length * share)));
+
+  const firstIdle = opponentCount - idleAllIn;
+  const firstUnacted = firstIdle - unactedOpponents;
+  const firstChecked = firstUnacted - checkedOpponents;
+  const firstCaller = firstChecked - cappedCallers;
+  const allInSeat = Array.from(
+    { length: opponentCount },
+    (_, o) =>
+      o >= firstIdle ||
+      (o >= firstChecked - allInCallers && o < firstChecked) ||
+      (o === 0 && firstCaller > 0 && !!opts.bettorAllIn),
+  );
+  const hasAllIn = allInSeat.some(Boolean);
+  const hasLive = allInSeat.some((allIn) => !allIn);
 
   // Caller range: capped just below the raising range (their nut combos would
   // have raised, so callers hold medium-strength hands).
@@ -482,6 +519,7 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   }
   const fullPool = combos.map((combo) => combo.cards);
   const unactedPool = topSlice(fullPool, continueShare);
+  const idlePool = topSlice(fullPool, Math.min(1, Math.max(0.05, opts.idleAllInShare ?? 1)));
 
   // Checker range: everything below the tier that would have bet, plus a
   // slow-play share drawn from that tier. Against a bet only the top
@@ -507,25 +545,33 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   // range exactly instead of sampling it with ±1.7% noise.
   if (board.length === 5 && opponentCount === 1) {
     const pools: WeightedPool[] =
-      unactedOpponents > 0
-        ? [{ pool: unactedPool, weight: 1 }]
-        : checkedOpponents > 0
-          ? [
-              { pool: trapPool, weight: trapWeight },
-              { pool: checkedPool, weight: 1 - trapWeight },
-            ]
-          : [
-              { pool: valuePool, weight: 1 - bluffShare },
-              { pool: bluffPool, weight: bluffPool.length > 0 ? bluffShare : 0 },
-            ];
+      idleAllIn > 0
+        ? [{ pool: idlePool, weight: 1 }]
+        : unactedOpponents > 0
+          ? [{ pool: unactedPool, weight: 1 }]
+          : checkedOpponents > 0
+            ? [
+                { pool: trapPool, weight: trapWeight },
+                { pool: checkedPool, weight: 1 - trapWeight },
+              ]
+            : [
+                { pool: valuePool, weight: 1 - bluffShare },
+                { pool: bluffPool, weight: bluffPool.length > 0 ? bluffShare : 0 },
+              ];
     const exact = exactRiverHeadsUp(heroCards, board, pools);
-    return { ...exact, rangeCombos: valueCount };
+    return {
+      ...exact,
+      rangeCombos: valueCount,
+      ...(hasAllIn ? { equityVsAllIn: exact.equity } : {}),
+    };
   }
 
   let wins = 0;
   let ties = 0;
   let losses = 0;
   let equitySum = 0;
+  let liveEquitySum = 0;
+  let allInEquitySum = 0;
 
   const drawFrom = (
     pool: [Card, Card][],
@@ -551,15 +597,27 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     throw new RangeError('Not enough cards left to sample an opponent hand');
   };
 
-  const firstUnacted = opponentCount - unactedOpponents;
-  const firstChecked = firstUnacted - checkedOpponents;
-  const firstCaller = firstChecked - cappedCallers;
+  const scores = new Array<number>(opponentCount);
+  // The hero's share of a pot contested by the opponents `inPot` selects.
+  const potShare = (heroScore: number, inPot: (o: number) => boolean): number => {
+    let best = -Infinity;
+    for (let o = 0; o < opponentCount; o++) if (inPot(o) && scores[o] > best) best = scores[o];
+    if (heroScore > best) return 1;
+    if (heroScore < best) return 0;
+    let sharing = 1;
+    for (let o = 0; o < opponentCount; o++) if (inPot(o) && scores[o] === heroScore) sharing++;
+    return 1 / sharing;
+  };
 
   for (let iter = 0; iter < iterations; iter++) {
     const usedIds = new Set<number>(knownIds);
     const oppHands: [Card, Card][] = [];
 
     for (let o = 0; o < opponentCount; o++) {
+      if (o >= firstIdle) {
+        oppHands.push(drawFrom(idlePool, usedIds, 'top'));
+        continue;
+      }
       // Players behind have taken no post-flop action, so retain their broad
       // pre-flop range instead of being mistaken for additional bettors.
       if (o >= firstUnacted) {
@@ -591,23 +649,23 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
 
     const heroScore = evaluateHand([...heroCards, ...fullBoard]).score;
     let bestOpp = -Infinity;
-    for (const oh of oppHands) {
-      const s = evaluateHand([...oh, ...fullBoard]).score;
-      if (s > bestOpp) bestOpp = s;
+    for (let o = 0; o < opponentCount; o++) {
+      scores[o] = evaluateHand([...oppHands[o], ...fullBoard]).score;
+      if (scores[o] > bestOpp) bestOpp = scores[o];
     }
 
     if (heroScore > bestOpp) {
       wins++;
       equitySum += 1;
     } else if (heroScore === bestOpp) {
-      let tieCount = 1;
-      for (const oh of oppHands) {
-        if (evaluateHand([...oh, ...fullBoard]).score === heroScore) tieCount++;
-      }
       ties++;
-      equitySum += 1 / tieCount;
+      equitySum += potShare(heroScore, () => true);
     } else {
       losses++;
+    }
+    if (hasAllIn) {
+      if (hasLive) liveEquitySum += potShare(heroScore, (o) => !allInSeat[o]);
+      allInEquitySum += potShare(heroScore, (o) => allInSeat[o]);
     }
   }
 
@@ -618,6 +676,12 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
     equity: equitySum / iterations,
     iterations,
     rangeCombos: valueCount,
+    ...(hasAllIn
+      ? {
+          equityVsAllIn: allInEquitySum / iterations,
+          ...(hasLive ? { equityVsLive: liveEquitySum / iterations } : {}),
+        }
+      : {}),
   };
 }
 

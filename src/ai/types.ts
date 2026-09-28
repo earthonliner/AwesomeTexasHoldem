@@ -71,6 +71,14 @@ export interface DecisionContext {
    * contest the pot regardless of what the players still to act do.
    */
   committedOpponents?: number;
+  /**
+   * Chips we can still win once we call: the pot layers we are eligible for,
+   * including our own call. Less than `potBefore + toCall` when we are all-in
+   * for less than the bet (the excess goes back or to a side pot).
+   */
+  winnablePot?: number;
+  /** Live opponents who are already all-in, when there are any. */
+  allIn?: AllInOpponents;
 
   // ---- Hand story-line (optional; derived from the action history) ----
   /** This player made the last aggressive action on the previous street. */
@@ -122,6 +130,27 @@ export interface DecisionContext {
   rangeOpponentIsProfiled?: boolean;
 }
 
+/**
+ * All-in opponents contest the pot layers they are eligible for, but can
+ * neither fold nor put in more chips: fold equity comes only from the others,
+ * and new chips go to a side pot the all-in players cannot win.
+ */
+export interface AllInOpponents {
+  opponents: number;
+  /** Of those, the ones that went all-in before this street and have not acted on it. */
+  idle: number;
+  /** Share of their range the idle ones are sampled from: 1 pre-flop, less when they committed later. */
+  idleShare: number;
+  /** The bet or raise being faced on this street is an opponent's all-in. */
+  bettor: boolean;
+  /** All-in opponents who acted on this street without being its last aggressor. */
+  callers: number;
+  /** Chips in the pot layers they contest together with us (counting our call). */
+  pot: number;
+  /** The current or previous street's aggressor is all-in: nobody is left to check to. */
+  aggressor: boolean;
+}
+
 export interface AIDecision {
   action: 'fold' | 'check' | 'call' | 'raise' | 'allin';
   /** Target streetCommitted level for raise/allin. */
@@ -133,6 +162,22 @@ export interface AIDecision {
   /** True when this action is a bluff (weak hand betting/raising). */
   isBluff: boolean;
 }
+
+export type PostflopStreet = 'flop' | 'turn' | 'river';
+
+/**
+ * Opening-bet counters kept per post-flop street, e.g. `flopMediumBets`: the
+ * chances to open the betting, the opening bets there by size class, and the
+ * subset of chances that followed the hero's own aggression on the previous
+ * street (c-bets and barrels).
+ */
+export type StreetBetCounter =
+  | 'BetChances'
+  | 'SmallBets'
+  | 'MediumBets'
+  | 'BigBets'
+  | 'ContinuationChances'
+  | 'ContinuationBets';
 
 /**
  * Observed behavioural profile of the hero, accumulated across many hands and
@@ -149,6 +194,8 @@ export interface HeroProfile {
   wentToShowdown: number;
   /** How often the hero folds to a flop continuation bet. */
   foldToCbet: number;
+  /** How often the hero folds to the opening bet of a river. */
+  foldToRiverBet: number;
   /** Raw counters used to derive the smoothed rates above. */
   counters: {
     handsDealt: number;
@@ -171,7 +218,8 @@ export interface HeroProfile {
     /**
      * Post-flop streets on which the hero could open the betting (first to
      * act, or checked to), and the opening bets made there by size class
-     * (`betSizeClass`). Unlike the river counters this needs no showdown.
+     * (`betSizeClass`), summed over the streets. Unlike the river counters
+     * this needs no showdown. The per-street split is kept alongside.
      */
     betOpportunities: number;
     smallBets: number;
@@ -183,5 +231,8 @@ export interface HeroProfile {
     /** Post-flop streets where a hero bet or raise was raised, and the folds there. */
     raisesFaced: number;
     raisesFolded: number;
-  };
+    /** Rivers where the hero faced the opening bet, and the folds to it. */
+    riverBetsFaced: number;
+    riverBetFolds: number;
+  } & Record<`${PostflopStreet}${StreetBetCounter}`, number>;
 }
