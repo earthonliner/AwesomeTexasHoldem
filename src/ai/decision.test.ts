@@ -1154,6 +1154,30 @@ describe('hard exploits the observed human style', () => {
     expect(readOn('river', valueBettor).betWidth.medium).toBeLessThan(1);
   });
 
+  it('reads a player who stabs nearly every turn and river as wide there too', () => {
+    // A quarter-pot stab at 80% of its turn and 90% of its river chances, where
+    // the population bets about half the time.
+    const stabber: HeroProfile = {
+      ...emptyHeroProfile(),
+      hands: 400,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 400,
+        betOpportunities: 199,
+        smallBets: 176,
+        flopBetChances: 84,
+        flopSmallBets: 79,
+        turnBetChances: 64,
+        turnSmallBets: 51,
+        riverBetChances: 51,
+        riverSmallBets: 46,
+      },
+    };
+    expect(readOn('turn', stabber).betWidth.small).toBeGreaterThan(1.65);
+    expect(readOn('river', stabber).betWidth.small).toBeGreaterThan(1.8);
+    expect(readOn('river', stabber).betWidth.big).toBeLessThan(1.2);
+  });
+
   it('reads flop c-bets and turn barrels as separate habits', () => {
     const cbetNoBarrel: HeroProfile = {
       ...emptyHeroProfile(),

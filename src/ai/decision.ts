@@ -386,6 +386,10 @@ export function computeExploit(
   // so the upward tilt stays small for standard sizes; not for overbets, which
   // the population reserves for nut-heavy ranges, so a habitual overbettor is
   // far more polar with them. A size the player almost never uses tilts down.
+  // Against a street the population bets half the time, betting ratios stop
+  // growing near the top: one that bets 90% there has almost nothing left to
+  // check with, so a player betting more than the norm is read by how much
+  // more rarely it checks when that says more.
   const street = postflopStreet(ctx.street);
   const betWeight = weight * confidence(c.betOpportunities, 30);
   const sizeRead = (
@@ -395,9 +399,12 @@ export function computeExploit(
     size: BetSizeClass,
   ): number => {
     const rate = (n: number, prior: number) => (n + prior * 10) / (chances + 10) / prior;
-    const often = rate(bets.small + bets.medium + bets.big, norm.small + norm.medium + norm.big);
+    const total = bets.small + bets.medium + bets.big;
+    const normTotal = norm.small + norm.medium + norm.big;
+    const betRate = rate(total, normTotal);
+    const often = betRate > 1 ? Math.max(betRate, 1 / rate(chances - total, 1 - normTotal)) : betRate;
     const tilt = clamp(
-      Math.pow(rate(bets[size], norm[size]) / often, 0.25),
+      Math.pow(rate(bets[size], norm[size]) / betRate, 0.25),
       0.6,
       size === 'big' ? 1.9 : 1.2,
     );
