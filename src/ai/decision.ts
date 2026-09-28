@@ -9,7 +9,14 @@ import {
   estimateRangeFraction,
   estimateBluffShare,
 } from '../engine/monteCarlo';
-import type { Personality, DecisionContext, AIDecision, HeroProfile, TablePosition } from './types';
+import type {
+  Personality,
+  DecisionContext,
+  AIDecision,
+  HeroProfile,
+  PostflopStreet,
+  TablePosition,
+} from './types';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { boardWetness } from './boardTexture';
 import {
@@ -32,7 +39,7 @@ import {
   valueFourBetProbability,
 } from './preflopRanges';
 import { analyseHand, type HandFeatures } from './handFeatures';
-import { betSizeClass, isBigRiverBet, type BetSizeClass } from './profile';
+import { betSizeClass, isBigRiverBet, streetCounterKey, type BetSizeClass } from './profile';
 
 export interface DecideOptions {
   personality: Personality;
@@ -244,7 +251,7 @@ function mk(
   return { action, amount, isBluff, thinkMs: thinkTime(rng, slow), reason: reason.join(' ') };
 }
 
-interface Exploit {
+export interface Exploit {
   bluffMult: number;
   stealBonus: number;
   /** Widen value / narrow our own bluffs when the hero calls down light. */
@@ -279,7 +286,11 @@ const blend = (raw: number, weight: number) => 1 + (raw - 1) * weight;
  * the more aggressive one); easy doesn't adjust at all. All reads are weighted
  * by sample size, so early noise fades toward neutral instead of hard cutoffs.
  */
-function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: HeroProfile): Exploit {
+export function computeExploit(
+  difficulty: Difficulty,
+  ctx: DecisionContext,
+  profile?: HeroProfile,
+): Exploit {
   const base: Exploit = {
     bluffMult: 1,
     stealBonus: 0,
@@ -354,26 +365,68 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
   // Opening-bet frequency per size needs no showdown, so it is free of the
   // called-hands bias above. Against the population norm per chance to open,
   // a player who stabs small at every chance or overbets far more often than
-  // usual bets a correspondingly wider range with that size.
+  // usual bets a correspondingly wider range with that size. Frequencies are
+  // read per street: a player who c-bets half pot on every flop and overbets
+  // the turn and river is wide with the flop half-pot bet, which a read pooled
+  // over the streets would dilute. The pooled read stands in until the street
+  // has a sample of its own.
+  //
+  // The width for one size is how often the player opens at all against the
+  // norm (square-rooted), tilted by how strongly it favours this size over the
+  // population's size mix. A player's usual size says little about its range,
+  // so the upward tilt stays small for standard sizes; not for overbets, which
+  // the population reserves for nut-heavy ranges, so a habitual overbettor is
+  // far more polar with them. A size the player almost never uses tilts down.
+  const street = postflopStreet(ctx.street);
   const betWeight = weight * confidence(c.betOpportunities, 30);
-  const widthRead = (bets: number, norm: number): number => {
-    const freq = (bets + norm * 10) / (c.betOpportunities + 10);
-    return blend(clamp(Math.sqrt(freq / norm), 0.75, 1.9), betWeight);
+  const sizeRead = (
+    bets: Record<BetSizeClass, number>,
+    chances: number,
+    norm: Record<BetSizeClass, number>,
+    size: BetSizeClass,
+  ): number => {
+    const rate = (n: number, prior: number) => (n + prior * 10) / (chances + 10) / prior;
+    const often = rate(bets.small + bets.medium + bets.big, norm.small + norm.medium + norm.big);
+    const tilt = clamp(
+      Math.pow(rate(bets[size], norm[size]) / often, 0.25),
+      0.6,
+      size === 'big' ? 1.9 : 1.2,
+    );
+    return clamp(Math.sqrt(often) * tilt, 0.75, 1.9);
   };
-  base.betWidth = {
-    small: widthRead(c.smallBets, OPENING_BET_NORM.small),
-    medium: widthRead(c.mediumBets, OPENING_BET_NORM.medium),
-    big: widthRead(c.bigBets, OPENING_BET_NORM.big),
+  const pooledBets = { small: c.smallBets, medium: c.mediumBets, big: c.bigBets };
+  const streetBets = street
+    ? {
+        small: c[streetCounterKey(street, 'SmallBets')],
+        medium: c[streetCounterKey(street, 'MediumBets')],
+        big: c[streetCounterKey(street, 'BigBets')],
+      }
+    : pooledBets;
+  const streetChances = street ? c[streetCounterKey(street, 'BetChances')] : 0;
+  const widthRead = (size: BetSizeClass): number => {
+    const pooled = sizeRead(pooledBets, c.betOpportunities, OPENING_BET_NORM, size);
+    if (!street) return blend(pooled, betWeight);
+    const own = sizeRead(streetBets, streetChances, STREET_OPENING_BET_NORM[street], size);
+    return blend(pooled + (own - pooled) * confidence(streetChances, 16), betWeight);
   };
+  base.betWidth = { small: widthRead('small'), medium: widthRead('medium'), big: widthRead('big') };
 
   // Checking to a raiser who seldom follows through (c-bet/barrel) hands it
   // free cards, so leads grow; a relentless barreller is the one to check-raise.
-  const continuationRate =
-    (c.continuationBets + CONTINUATION_NORM * 8) / (c.continuationChances + 8);
-  base.leadMult = blend(
-    clamp(CONTINUATION_NORM / continuationRate, 0.6, 2.2),
-    weight * confidence(c.continuationChances, 15),
-  );
+  // Per street as well: flop c-bets and turn barrels are separate habits.
+  const continuationRead = (bets: number, chances: number, norm: number): number =>
+    clamp(norm / ((bets + norm * 8) / (chances + 8)), 0.6, 2.2);
+  let lead = continuationRead(c.continuationBets, c.continuationChances, CONTINUATION_NORM);
+  if (street) {
+    const chances = c[streetCounterKey(street, 'ContinuationChances')];
+    const own = continuationRead(
+      c[streetCounterKey(street, 'ContinuationBets')],
+      chances,
+      STREET_CONTINUATION_NORM[street],
+    );
+    lead += (own - lead) * confidence(chances, 10);
+  }
+  base.leadMult = blend(lead, weight * confidence(c.continuationChances, 15));
 
   // A bettor who gives up everything but strong hands when raised is raised
   // light; one who never lets go is raised for value only. Until its raises
@@ -388,10 +441,26 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
   return base;
 }
 
-/** Population opening-bet frequency per chance to open, by size class. */
-const OPENING_BET_NORM: Record<BetSizeClass, number> = { small: 0.14, medium: 0.26, big: 0.03 };
+/**
+ * Population opening-bet frequency per chance to open, by size class, pooled
+ * over the streets and per street (hard-AI population, 6-max, 100bb). Sizes the
+ * population almost never uses (flop overbets, small turn bets) are floored at
+ * 0.02 so a single observation cannot max out the read.
+ */
+const OPENING_BET_NORM: Record<BetSizeClass, number> = { small: 0.13, medium: 0.25, big: 0.02 };
+const STREET_OPENING_BET_NORM: Record<PostflopStreet, Record<BetSizeClass, number>> = {
+  flop: { small: 0.14, medium: 0.17, big: 0.02 },
+  turn: { small: 0.02, medium: 0.45, big: 0.02 },
+  river: { small: 0.34, medium: 0.1, big: 0.05 },
+};
 /** Population continuation-bet frequency (c-bets and barrels) when checked to. */
 const CONTINUATION_NORM = 0.6;
+/** The same per street: flop c-bets, turn barrels, river barrels. */
+const STREET_CONTINUATION_NORM: Record<PostflopStreet, number> = { flop: 0.49, turn: 0.7, river: 0.63 };
+
+function postflopStreet(street: DecisionContext['street']): PostflopStreet | null {
+  return street === 'flop' || street === 'turn' || street === 'river' ? street : null;
+}
 /** Fold rate to a raise that the base raise fold equity (`estimateFoldEquity`) assumes. */
 const RAISE_FOLD_NORM = 0.4;
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { actionEV, decide } from './decision';
+import { actionEV, computeExploit, decide } from './decision';
 import { generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile } from './profile';
@@ -1084,6 +1084,90 @@ describe('hard exploits the observed human style', () => {
     expect(overbettor).toBeLessThan(standard - 0.3);
     // The read is per size: a small-bet habit says nothing about overbets.
     expect(foldRate('6h 6d', turn, 1.2, bettor('smallBets'))).toBeGreaterThan(overbettor + 0.3);
+  });
+
+  // A flop c-bettor who bets half pot at 70% of its flop chances and switches
+  // to overbets on the turn and river; `split: false` is the same history seen
+  // only through the pooled counters (as a profile saved before the split).
+  const streetBettor = (split: boolean): HeroProfile => {
+    const counters = {
+      ...emptyHeroProfile().counters,
+      handsDealt: 120,
+      betOpportunities: 150,
+      mediumBets: 49,
+      bigBets: 55,
+      continuationChances: 90,
+      continuationBets: 70,
+    };
+    if (split) {
+      Object.assign(counters, {
+        flopBetChances: 70,
+        flopMediumBets: 49,
+        turnBetChances: 45,
+        turnBigBets: 30,
+        riverBetChances: 35,
+        riverBigBets: 25,
+      });
+    }
+    return { ...emptyHeroProfile(), hands: 120, counters };
+  };
+  const readOn = (street: 'flop' | 'turn' | 'river', profile: HeroProfile) =>
+    computeExploit('hard', ctx({ hole: parseCards('Qh Jd') as [Card, Card], street }), profile);
+
+  it('reads opening-bet width per street, so later overbets do not dilute the flop c-bet read', () => {
+    const pooled = readOn('flop', streetBettor(false)).betWidth.medium;
+    const flop = readOn('flop', streetBettor(true)).betWidth.medium;
+    expect(flop).toBeGreaterThan(1.5);
+    expect(flop).toBeGreaterThan(pooled + 0.3);
+    const turn = readOn('turn', streetBettor(true)).betWidth;
+    expect(turn.big).toBeGreaterThan(1.8);
+    // It never bets half pot on the turn, so such a bet is no wide stab.
+    expect(turn.medium).toBeLessThan(1);
+  });
+
+  it('defends wider against the flop c-bets of that per-street profile', () => {
+    const flop = parseCards('Ks 8c 3d');
+    const hands = ['Qh Jd', 'Ah 5d', 'Th 9h', '7h 7d', 'Jc Tc'];
+    const total = (profile: HeroProfile) =>
+      hands.reduce((sum, h) => sum + foldRate(h, flop, 0.5, profile), 0) / hands.length;
+    expect(total(streetBettor(true))).toBeLessThan(total(streetBettor(false)) - 0.05);
+  });
+
+  it('does not read a rare standard-size river bettor as wide', () => {
+    // Bets 20% of river chances, all half pot: fewer bets than the population,
+    // at a size the population seldom uses on the river.
+    const valueBettor: HeroProfile = {
+      ...emptyHeroProfile(),
+      hands: 150,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 150,
+        betOpportunities: 120,
+        mediumBets: 24,
+        riverBetChances: 120,
+        riverMediumBets: 24,
+      },
+    };
+    expect(readOn('river', valueBettor).betWidth.medium).toBeLessThan(1);
+  });
+
+  it('reads flop c-bets and turn barrels as separate habits', () => {
+    const cbetNoBarrel: HeroProfile = {
+      ...emptyHeroProfile(),
+      hands: 120,
+      counters: {
+        ...emptyHeroProfile().counters,
+        handsDealt: 120,
+        continuationChances: 80,
+        continuationBets: 50,
+        flopContinuationChances: 50,
+        flopContinuationBets: 45,
+        turnContinuationChances: 30,
+        turnContinuationBets: 5,
+      },
+    };
+    expect(readOn('flop', cbetNoBarrel).leadMult).toBeLessThan(0.7);
+    expect(readOn('turn', cbetNoBarrel).leadMult).toBeGreaterThan(1.8);
   });
 
   it('raises the stabs of a player who folds to raises with any hand', () => {

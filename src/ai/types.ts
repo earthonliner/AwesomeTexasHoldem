@@ -134,6 +134,22 @@ export interface AIDecision {
   isBluff: boolean;
 }
 
+export type PostflopStreet = 'flop' | 'turn' | 'river';
+
+/**
+ * Opening-bet counters kept per post-flop street, e.g. `flopMediumBets`: the
+ * chances to open the betting, the opening bets there by size class, and the
+ * subset of chances that followed the hero's own aggression on the previous
+ * street (c-bets and barrels).
+ */
+export type StreetBetCounter =
+  | 'BetChances'
+  | 'SmallBets'
+  | 'MediumBets'
+  | 'BigBets'
+  | 'ContinuationChances'
+  | 'ContinuationBets';
+
 /**
  * Observed behavioural profile of the hero, accumulated across many hands and
  * used by HARD opponents to exploit. All rates are smoothed estimates 0..1.
@@ -149,6 +165,8 @@ export interface HeroProfile {
   wentToShowdown: number;
   /** How often the hero folds to a flop continuation bet. */
   foldToCbet: number;
+  /** How often the hero folds to the opening bet of a river. */
+  foldToRiverBet: number;
   /** Raw counters used to derive the smoothed rates above. */
   counters: {
     handsDealt: number;
@@ -171,7 +189,8 @@ export interface HeroProfile {
     /**
      * Post-flop streets on which the hero could open the betting (first to
      * act, or checked to), and the opening bets made there by size class
-     * (`betSizeClass`). Unlike the river counters this needs no showdown.
+     * (`betSizeClass`), summed over the streets. Unlike the river counters
+     * this needs no showdown. The per-street split is kept alongside.
      */
     betOpportunities: number;
     smallBets: number;
@@ -183,5 +202,8 @@ export interface HeroProfile {
     /** Post-flop streets where a hero bet or raise was raised, and the folds there. */
     raisesFaced: number;
     raisesFolded: number;
-  };
+    /** Rivers where the hero faced the opening bet, and the folds to it. */
+    riverBetsFaced: number;
+    riverBetFolds: number;
+  } & Record<`${PostflopStreet}${StreetBetCounter}`, number>;
 }
