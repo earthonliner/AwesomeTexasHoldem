@@ -1177,8 +1177,9 @@ describe('hard exploits the observed human style', () => {
     expect(readOn('turn', stabber(51, 46)).betWidth.small).toBeGreaterThan(1.65);
     const river = readOn('river', stabber(51, 46)).betWidth;
     expect(river.small).toBeGreaterThan(1.8);
-    // It never overbets: that size tilts well below its stabs.
-    expect(river.big).toBeLessThan(river.small - 0.4);
+    // It never overbets: a sudden overbet is out of character, not a wide stab.
+    expect(river.big).toBeLessThan(1);
+    expect(river.medium).toBeLessThan(1);
   });
 
   it('starts a street with few chances of its own from the pooled read', () => {

@@ -388,7 +388,10 @@ export function computeExploit(
   // population's size mix. A player's usual size says little about its range,
   // so the upward tilt stays small for standard sizes; not for overbets, which
   // the population reserves for nut-heavy ranges, so a habitual overbettor is
-  // far more polar with them. A size the player almost never uses tilts down.
+  // far more polar with them. A size the player almost never uses tilts down,
+  // and a frequent bettor is wide only with the sizes it uses as often as it
+  // bets overall: an overbet from a player who stabs small at every chance is
+  // out of character, not one more stab.
   // Against a street the population bets half the time, betting ratios stop
   // growing near the top: one that bets 90% there has almost nothing left to
   // check with, so a player betting more than the norm is read by how much
@@ -417,9 +420,11 @@ export function computeExploit(
     };
   };
   const sizeWidth = (r: BetRatios, size: BetSizeClass): number => {
+    const lean = r[size] / r.bet;
     const often = r.bet > 1 ? Math.max(r.bet, 1 / r.check) : r.bet;
-    const tilt = clamp(Math.pow(r[size] / r.bet, 0.25), 0.6, size === 'big' ? 1.9 : 1.2);
-    return clamp(Math.sqrt(often) * tilt, 0.75, 1.9);
+    const reach = often > 1 ? Math.pow(often, Math.min(1, lean)) : often;
+    const tilt = clamp(Math.pow(lean, 0.25), 0.6, size === 'big' ? 1.9 : 1.2);
+    return clamp(Math.sqrt(reach) * tilt, 0.75, 1.9);
   };
   const pooledBets = { small: c.smallBets, medium: c.mediumBets, big: c.bigBets };
   const streetBets = street
