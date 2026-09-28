@@ -315,12 +315,15 @@ function scheduleAI(set: SetFn, get: GetFn, idx: number): void {
     bluffCount: aiBluffCounts[player.id] ?? 0,
     lastBluffStreet: aiLastBluffStreet[player.id],
   });
+  // Reads on the hero only apply while the hero contests the pot; once it has
+  // folded, the remaining AIs play each other without them.
+  const heroInHand = game.players.some((x) => x.isHero && !x.folded && !x.sittingOut);
   const decision = decide({
     personality: seat.personality,
     difficulty: state.settings.difficulty,
     ctx,
     rng: Math.random,
-    heroProfile: state.heroProfile,
+    heroProfile: heroInHand ? state.heroProfile : undefined,
   });
 
   set({ thinkingId: player.id });
