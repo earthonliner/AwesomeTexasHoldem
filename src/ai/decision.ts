@@ -1551,7 +1551,10 @@ function decidePostflop(
     // range holds depends on the line: the aggressor's has several value bets
     // per air hand, so its air bets nearly always; after a checked-through
     // turn, far less often. Bluffs split between the thin and the polar size
-    // in the proportion each size needs, the better blockers going big.
+    // in the proportion each size needs, the better blockers going big. Each
+    // extra opponent narrows the value bets to balance and must fold as well;
+    // the EV gate already prices the second, so the chance thins by 0.7 per
+    // extra opponent rather than halving.
     const riverBluffCandidate =
       street === 'river' &&
       (features.category === HandCategory.HighCard ||
@@ -1577,7 +1580,7 @@ function decidePostflop(
           (thinNeed + polarNeed) *
             mix.valuePerAir *
             clamp(exploit.riverFold, 0.4, 1.3) *
-            Math.pow(0.5, opponents - 1),
+            Math.pow(0.7, opponents - 1),
           0,
           0.85,
         ),

@@ -1961,6 +1961,17 @@ describe('river bluffs linked to the bet size (hard)', () => {
     expect(afterCheck).toBeLessThan(aggressor - 0.2);
   });
 
+  it('keeps stabbing a multiway river that checked through, less often than heads-up', () => {
+    const spot = (opponents: number) => () =>
+      river('afterCheck', { liveOpponents: opponents, playersBehind: 0 });
+    const headsUp = betRate(sample(spot(1), 9500));
+    const threeWay = betRate(sample(spot(2), 9500));
+    const fourWay = betRate(sample(spot(3), 9500));
+    expect(threeWay).toBeGreaterThan(0.2);
+    expect(threeWay).toBeLessThan(headsUp);
+    expect(fourWay).toBeLessThan(threeWay);
+  });
+
   it('splits the bluffs between the thin and the polar size', () => {
     const bluffs = sample(() => river('aggressor'), 9100).filter((d) => d.action === 'raise');
     const thin = bluffs.filter((d) => d.reason.endsWith('river-thin-bluff'));
