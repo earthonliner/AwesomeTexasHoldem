@@ -5,11 +5,18 @@
  * rotation keeps its own AI table images and profile of the bot, as a real
  * table would.
  *
- *   npm run eval:ai -- <bot> [dealsPerSeed=1000] [seeds=11,22] [seats=6]
+ *   npm run eval:ai -- <bot> [dealsPerSeed=1000] [seeds=11,22] [seats=6] [out.json]
  *
  * Prints the bot's result in bb/100 (negative: the AI wins) with its standard
  * error, and how the AI answers the bot's bets by street and size class.
+ *
+ * Every decision, the bot's and the AI's, draws from its own stream seeded by
+ * its place in the run (seed, deal, rotation, action), so two versions of the
+ * AI run on the same seeds see the same cards and the same random draws and
+ * part ways only where they decide differently. `out.json` keeps the per-deal
+ * results; `compare.ts` pairs two such files deal by deal.
  */
+import { writeFileSync } from 'node:fs';
 import { applyAction, startHand, type SeatInit } from '../../src/engine/game';
 import { BB_CHIPS, type ActionRecord, type GameConfig, type GameState } from '../../src/engine/gameTypes';
 import { buildDecisionContext } from '../../src/ai/context';
@@ -47,6 +54,17 @@ function tallyResponses(game: GameState, botId: number, out: Responses): void {
   }
 }
 
+/** FNV-1a style mix of the coordinates of one decision into a seed. */
+function decisionSeed(...coordinates: number[]): number {
+  let h = 2166136261;
+  for (const x of coordinates) {
+    h ^= x >>> 0;
+    h = Math.imul(h, 16777619);
+    h ^= h >>> 13;
+  }
+  return h >>> 0;
+}
+
 /** Per-deal bot net (chips, summed over the seat rotations) for one seed. */
 function runDuplicate(bot: Bot, deals: number, seed: number, seatCount: number, responses: Responses): number[] {
   const stackBB = 100;
@@ -54,8 +72,7 @@ function runDuplicate(bot: Bot, deals: number, seed: number, seatCount: number, 
   const personalities = Array.from({ length: seatCount }, (_, i) =>
     generatePersonality('hard', seeded(seed * 31 + i)),
   );
-  const rotations = Array.from({ length: seatCount }, (_, k) => ({
-    rng: seeded(seed * 7919 + k * 104729 + 1),
+  const rotations = Array.from({ length: seatCount }, () => ({
     profile: emptyHeroProfile(),
     images: {} as Record<number, TableImage>,
   }));
@@ -74,11 +91,11 @@ function runDuplicate(bot: Bot, deals: number, seed: number, seatCount: number, 
       let game = startHand(config, seats, d % seatCount, d + 1, seeded(seed * 1000003 + d * 7 + 13));
       const bluffCount: Record<number, number> = {};
       const lastBluffStreet: Record<number, GameState['street']> = {};
-      for (let guard = 0; game.status === 'betting' && guard < 400; guard++) {
+      for (let step = 0; game.status === 'betting' && step < 400; step++) {
         const idx = game.toAct;
         if (idx < 0) break;
         if (idx === k) {
-          game = applyAction(game, bot(game, idx, rot.rng));
+          game = applyAction(game, bot(game, idx, seeded(decisionSeed(seed, d, k, step, 2))));
           continue;
         }
         const ctx = buildDecisionContext(game, idx, {
@@ -90,7 +107,7 @@ function runDuplicate(bot: Bot, deals: number, seed: number, seatCount: number, 
           personality: personalities[idx],
           difficulty: 'hard',
           ctx,
-          rng: rot.rng,
+          rng: seeded(decisionSeed(seed, d, k, step, 1)),
           heroProfile: game.players[k].folded ? undefined : rot.profile,
         });
         if (decision.isBluff) {
@@ -111,7 +128,7 @@ function runDuplicate(bot: Bot, deals: number, seed: number, seatCount: number, 
   return perDeal;
 }
 
-const [botName = 'abc', dealsArg = '1000', seedsArg = '11,22', seatsArg = '6'] = process.argv.slice(2);
+const [botName = 'abc', dealsArg = '1000', seedsArg = '11,22', seatsArg = '6', outFile] = process.argv.slice(2);
 const bot = BOTS[botName];
 if (!bot) {
   console.error(`Unknown bot "${botName}". Choose one of: ${Object.keys(BOTS).join(', ')}`);
@@ -129,6 +146,9 @@ const perHand = seeds
 const mean = perHand.reduce((a, b) => a + b, 0) / perHand.length;
 const variance = perHand.reduce((a, b) => a + (b - mean) ** 2, 0) / (perHand.length - 1);
 const standardError = Math.sqrt(variance / perHand.length);
+if (outFile) {
+  writeFileSync(outFile, JSON.stringify({ bot: botName, dealsPerSeed: deals, seeds, seatCount, perDeal: perHand }));
+}
 
 console.log(
   `${botName}: ${perHand.length} deals x ${seatCount} seats, bot ${(mean * 100).toFixed(1)} ` +
