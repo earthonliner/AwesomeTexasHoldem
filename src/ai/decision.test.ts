@@ -1017,13 +1017,26 @@ describe('hard exploits the observed human style', () => {
     },
   });
 
-  function foldRate(
+  // 40 of the player's bets or raises were raised, and it folded `folded` of them.
+  const raisedBettor = (folded: number): HeroProfile => ({
+    ...emptyHeroProfile(),
+    hands: 120,
+    counters: {
+      ...emptyHeroProfile().counters,
+      handsDealt: 120,
+      raisesFaced: 40,
+      raisesFolded: folded,
+    },
+  });
+
+  function responses(
     hole: string,
     board: Card[],
     betToPot: number,
-    profile?: ReturnType<typeof bettor>,
-  ): number {
+    profile?: HeroProfile,
+  ): { fold: number; raise: number } {
     let folds = 0;
+    let raises = 0;
     const n = 50;
     const pot = 40;
     const bet = Math.round(pot * betToPot);
@@ -1051,9 +1064,11 @@ describe('hard exploits the observed human style', () => {
         heroProfile: profile,
       });
       if (d.action === 'fold') folds++;
+      if (d.action === 'raise' || d.action === 'allin') raises++;
     }
-    return folds / n;
+    return { fold: folds / n, raise: raises / n };
   }
+  const foldRate = (...args: Parameters<typeof responses>) => responses(...args).fold;
 
   it('widens the range of a player who stabs small at every chance', () => {
     const flop = parseCards('Ks 7c 2d');
@@ -1069,6 +1084,22 @@ describe('hard exploits the observed human style', () => {
     expect(overbettor).toBeLessThan(standard - 0.3);
     // The read is per size: a small-bet habit says nothing about overbets.
     expect(foldRate('6h 6d', turn, 1.2, bettor('smallBets'))).toBeGreaterThan(overbettor + 0.3);
+  });
+
+  it('raises the stabs of a player who folds to raises with any hand', () => {
+    const flop = parseCards('Ks 7c 2d');
+    const standard = responses('Qh Jd', flop, 0.3).raise;
+    const folder = responses('Qh Jd', flop, 0.3, raisedBettor(32)).raise;
+    expect(folder).toBeGreaterThan(standard + 0.2);
+  });
+
+  it('semi-bluff raises a player who never folds to a raise less', () => {
+    const flop = parseCards('9h 8c 2h');
+    const standard = responses('Jh Th', flop, 0.5).raise;
+    const sticky = responses('Jh Th', flop, 0.5, raisedBettor(2)).raise;
+    expect(sticky).toBeLessThan(standard - 0.1);
+    // Folding to raises at the usual rate adds no light raises.
+    expect(responses('Qh Jd', parseCards('Ks 7c 2d'), 0.3, raisedBettor(16)).raise).toBeLessThan(0.2);
   });
 });
 

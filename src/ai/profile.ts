@@ -38,6 +38,8 @@ export function emptyHeroProfile(): HeroProfile {
       bigBets: 0,
       continuationChances: 0,
       continuationBets: 0,
+      raisesFaced: 0,
+      raisesFolded: 0,
     },
   };
 }
@@ -73,6 +75,8 @@ export interface HandSummary {
     continuationChances: number;
     continuationBets: number;
   };
+  /** Post-flop streets where the hero's bet or raise was raised, and how often it folded. */
+  raisedAfterBetting?: { faced: number; folded: number };
 }
 
 const AGGRESSIVE = new Set(['bet', 'raise', 'allin']);
@@ -205,6 +209,21 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     }
   }
 
+  const raisedAfterBetting = { faced: 0, folded: 0 };
+  for (let s = 1; s < streets.length; s++) {
+    const onStreet = actions.filter((a) => a.street === streets[s]);
+    const betIndex = onStreet.findIndex((a) => a.playerId === playerId && AGGRESSIVE.has(a.type));
+    if (betIndex < 0) continue;
+    const raiseIndex = onStreet.findIndex(
+      (a, i) => i > betIndex && a.playerId !== playerId && AGGRESSIVE.has(a.type),
+    );
+    if (raiseIndex < 0) continue;
+    const response = onStreet.slice(raiseIndex + 1).find((a) => a.playerId === playerId);
+    if (!response || response.toCall <= 0) continue;
+    raisedAfterBetting.faced += 1;
+    if (response.type === 'fold') raisedAfterBetting.folded += 1;
+  }
+
   return {
     heroId: playerId,
     actions,
@@ -215,6 +234,7 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     heroFoldedToCbet,
     riverBetShown,
     openingBets,
+    raisedAfterBetting,
   };
 }
 
@@ -276,6 +296,10 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
     c.bigBets += summary.openingBets.big;
     c.continuationChances += summary.openingBets.continuationChances;
     c.continuationBets += summary.openingBets.continuationBets;
+  }
+  if (summary.raisedAfterBetting) {
+    c.raisesFaced += summary.raisedAfterBetting.faced;
+    c.raisesFolded += summary.raisedAfterBetting.folded;
   }
 
   const ratio = (num: number, den: number, prior: number, priorWeight: number) =>

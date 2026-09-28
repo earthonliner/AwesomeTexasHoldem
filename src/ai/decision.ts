@@ -264,6 +264,10 @@ interface Exploit {
   betWidth: Record<BetSizeClass, number>;
   /** Scales leads into the hero as the previous-street aggressor (>1: it seldom follows through). */
   leadMult: number;
+  /** Fold-equity multiplier for raising the hero's post-flop bets. */
+  raiseFold: number;
+  /** Extra chance to raise the hero's bets with any hand once it is seen folding to raises. */
+  lightRaise: number;
 }
 
 /** Blend an exploit multiplier toward neutral (1) by sample confidence. */
@@ -288,6 +292,8 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
     foldPressure: 1,
     betWidth: { small: 1, medium: 1, big: 1 },
     leadMult: 1,
+    raiseFold: 1,
+    lightRaise: 0,
   };
   if (difficulty !== 'hard' || !profile) return base;
   const c = profile.counters;
@@ -369,6 +375,16 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
     weight * confidence(c.continuationChances, 15),
   );
 
+  // A bettor who gives up everything but strong hands when raised is raised
+  // light; one who never lets go is raised for value only. Until its raises
+  // have been observed, the general fold read stands in.
+  const raiseFoldRate =
+    (c.raisesFolded + RAISE_FOLD_NORM * 6) / (c.raisesFaced + 6);
+  const raiseRead = clamp(raiseFoldRate / RAISE_FOLD_NORM, 0.45, 1.7);
+  const raiseWeight = weight * confidence(c.raisesFaced, 12);
+  base.raiseFold = base.foldPressure + (raiseRead - base.foldPressure) * raiseWeight;
+  base.lightRaise = clamp((raiseRead - 1.1) * 0.7, 0, 0.35) * raiseWeight;
+
   return base;
 }
 
@@ -376,6 +392,8 @@ function computeExploit(difficulty: Difficulty, ctx: DecisionContext, profile?: 
 const OPENING_BET_NORM: Record<BetSizeClass, number> = { small: 0.14, medium: 0.26, big: 0.03 };
 /** Population continuation-bet frequency (c-bets and barrels) when checked to. */
 const CONTINUATION_NORM = 0.6;
+/** Fold rate to a raise that the base raise fold equity (`estimateFoldEquity`) assumes. */
+const RAISE_FOLD_NORM = 0.4;
 
 export function decide(opts: DecideOptions): AIDecision {
   const { personality: p, difficulty, ctx, rng = defaultRng, heroProfile } = opts;
@@ -1499,6 +1517,32 @@ function decidePostflop(
   // We checked and face the only bet of the street: the spot the
   // check-to-raiser line keeps its strong hands and good draws for.
   const checkRaiseSpot = !!ctx.checkedThisStreet && (ctx.streetAggressionCount ?? 1) === 1;
+  const raisePressure = ctx.aggressorIsHero ? exploit.raiseFold : exploit.foldPressure;
+  // Against a bettor seen folding to raises far above the norm, a raise is a
+  // bluff of its own with any hand that would otherwise just call or fold.
+  const lightRaise = (): AIDecision | null => {
+    if (
+      exploit.lightRaise <= 0 ||
+      !mayRaise ||
+      !ctx.aggressorIsHero ||
+      opponents > 1 ||
+      (ctx.streetAggressionCount ?? 1) !== 1
+    ) {
+      return null;
+    }
+    const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, true);
+    const sized = sizeRaise(ctx, bluffSize, rng, committed, Infinity, 0, inPosition ? 2.8 : 3.3);
+    const deltaEV = aggressiveEV(sized, foldEquity) - Math.max(evCall, 0);
+    if (rng() >= exploit.lightRaise * indifferenceGate(deltaEV)) return null;
+    return mk(
+      sized.allIn ? 'allin' : 'raise',
+      sized.amount,
+      rng,
+      true,
+      [...reason, 'exploit-light-raise'],
+      true,
+    );
+  };
 
   if (rng() < continueProbability) {
     if (
@@ -1559,7 +1603,7 @@ function decidePostflop(
       // value check-raises and keep equity when called.
       const checkRaiseBluff = checkRaiseSpot
         ? clamp(0.16 + features.bluffQuality * 0.4, 0, 0.45) *
-          exploit.foldPressure *
+          raisePressure *
           (street === 'turn' ? 0.7 : 1) *
           (opponents > 1 ? 0.5 : 1)
         : 0;
@@ -1575,7 +1619,7 @@ function decidePostflop(
         );
       }
     }
-    return mk('call', 0, rng, false, [...reason, 'equity-call'], true);
+    return lightRaise() ?? mk('call', 0, rng, false, [...reason, 'equity-call'], true);
   }
 
   if (
@@ -1600,7 +1644,7 @@ function decidePostflop(
     }
   }
 
-  return mk('fold', 0, rng, false, [...reason, 'range-fold'], true);
+  return lightRaise() ?? mk('fold', 0, rng, false, [...reason, 'range-fold'], true);
 }
 
 function preflopRangeForPostflop(ctx: DecisionContext, exploit: Exploit): number {
@@ -1655,7 +1699,7 @@ function estimateFoldEquity(
   }
   if (ctx.facingCheckRaise) foldEquity -= 0.16;
   if ((ctx.streetAggressionCount ?? 0) >= 2) foldEquity -= 0.1;
-  foldEquity *= exploit.foldPressure;
+  foldEquity *= isRaise && ctx.aggressorIsHero ? exploit.raiseFold : exploit.foldPressure;
   return clamp(foldEquity, 0.08, 0.72);
 }
 

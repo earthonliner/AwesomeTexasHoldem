@@ -121,17 +121,18 @@ describe('updateHeroProfile — new exploit dimensions', () => {
     expect(summarizePlayerHand(limped, 2).facedSteal).toBe(false);
   });
 
+  const action = (street: 'preflop' | 'flop' | 'turn' | 'river', playerId: number, type: 'check' | 'bet' | 'call' | 'raise' | 'allin' | 'fold', chips: number, potBefore: number, toCall: number) => ({
+    playerId,
+    street,
+    type,
+    amount: chips,
+    chipsPutIn: chips,
+    raiseBy: type === 'bet' || type === 'raise' || type === 'allin' ? chips - toCall : 0,
+    potBefore,
+    toCall,
+  });
+
   it('counts opening-bet chances and opening bets by size, not bets into a bet', () => {
-    const action = (street: 'preflop' | 'flop' | 'turn' | 'river', playerId: number, type: 'check' | 'bet' | 'call' | 'raise', chips: number, potBefore: number, toCall: number) => ({
-      playerId,
-      street,
-      type,
-      amount: chips,
-      chipsPutIn: chips,
-      raiseBy: type === 'bet' || type === 'raise' ? chips - toCall : 0,
-      potBefore,
-      toCall,
-    });
     const game = {
       players: [
         { id: 0, isHero: true, hole: parseCards('Ah Qd'), folded: false, sittingOut: false },
@@ -172,5 +173,44 @@ describe('updateHeroProfile — new exploit dimensions', () => {
     expect(p.counters.smallBets).toBe(1);
     expect(p.counters.bigBets).toBe(1);
     expect(p.counters.continuationChances).toBe(1);
+  });
+
+  it('counts the raises met after betting and the folds to them', () => {
+    const game = {
+      players: [
+        { id: 0, isHero: true, hole: parseCards('Ah Qd'), folded: true, sittingOut: false },
+        { id: 1, isHero: false, hole: parseCards('As Ks'), folded: false, sittingOut: false },
+      ],
+      board: parseCards('Ac 8c 3d 6s 2h'),
+      history: [
+        action('preflop', 0, 'raise', 6, 3, 1),
+        action('preflop', 1, 'call', 4, 9, 4),
+        // Flop: the c-bet is check-raised and called.
+        action('flop', 1, 'check', 0, 12, 0),
+        action('flop', 0, 'bet', 6, 12, 0),
+        action('flop', 1, 'raise', 18, 18, 6),
+        action('flop', 0, 'call', 12, 36, 12),
+        // Turn: the bet is only called.
+        action('turn', 1, 'check', 0, 48, 0),
+        action('turn', 0, 'bet', 24, 48, 0),
+        action('turn', 1, 'call', 24, 72, 24),
+        // River: the hero raises a lead, meets an all-in and folds.
+        action('river', 1, 'bet', 30, 96, 0),
+        action('river', 0, 'raise', 90, 126, 30),
+        action('river', 1, 'allin', 150, 216, 60),
+        action('river', 0, 'fold', 0, 366, 90),
+      ],
+      revealed: [],
+      buttonIndex: 0,
+      bigBlind: 2,
+    } as unknown as GameState;
+
+    const summary = summarizePlayerHand(game, 0);
+    expect(summary.raisedAfterBetting).toEqual({ faced: 2, folded: 1 });
+    // The villain's flop check-raise was never raised back; its river lead was, and it re-raised.
+    expect(summarizePlayerHand(game, 1).raisedAfterBetting).toEqual({ faced: 1, folded: 0 });
+    const p = updateHeroProfile(emptyHeroProfile(), summary);
+    expect(p.counters.raisesFaced).toBe(2);
+    expect(p.counters.raisesFolded).toBe(1);
   });
 });
