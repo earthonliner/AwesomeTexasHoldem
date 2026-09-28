@@ -9,7 +9,7 @@ import {
   estimateRangeFraction,
   estimateBluffShare,
 } from '../engine/monteCarlo';
-import type { Personality, DecisionContext, AIDecision, HeroProfile } from './types';
+import type { Personality, DecisionContext, AIDecision, HeroProfile, TablePosition } from './types';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { boardWetness } from './boardTexture';
 import {
@@ -577,11 +577,9 @@ function decidePreflop(
 
   if (potType === 'singleRaised' || raises === 1) {
     const inPosition = ctx.inPositionVsAggressor ?? ctx.positionFactor >= 0.65;
-    let defendRange =
-      position === 'bb' ? 0.42 : position === 'sb' ? 0.23 : inPosition ? 0.24 : 0.17;
+    const openerRange = openerRangeFor(ctx, ctx.aggressorPosition);
+    let defendRange = callerRangeFor(position, inPosition, openerRange);
     defendRange *= Math.exp(-0.2 * Math.max(0, wagerBB - 2.5));
-    if ((ctx.aggressorPositionFactor ?? 0.5) >= 0.72) defendRange *= 1.18;
-    if ((ctx.aggressorPositionFactor ?? 0.5) <= 0.42) defendRange *= 0.78;
     defendRange *= style;
     defendRange *= ctx.aggressorIsHero ? Math.sqrt(exploit.rangeMult) : 1;
     defendRange += Math.min(0.08, callers * 0.035);
@@ -591,7 +589,9 @@ function decidePreflop(
       return mk('fold', 0, rng, false, [...reason, `def=${defendRange.toFixed(2)}`]);
     }
 
-    const value3Range = (ctx.aggressorPositionFactor ?? 0.5) >= 0.72 ? 0.085 : 0.055;
+    // Value 3-bets track the opener's width: QQ+/AK against an early open,
+    // roughly the top 8-9% against a button or small-blind steal.
+    const value3Range = clamp(0.055 * Math.pow(openerRange / BASELINE_OPEN_RANGE, 0.7), 0.04, 0.095);
     const value3 = strength >= 1 - value3Range;
     const bluff3 =
       isThreeBetBluff(ctx) &&
@@ -798,6 +798,34 @@ function openingRange(
     case 'bb':
       return 0.28;
   }
+}
+
+/** Opening width the defend/caller ranges below are calibrated against. */
+const BASELINE_OPEN_RANGE = 0.26;
+
+/**
+ * Expected width of a single raiser's range from its TABLE position. The live
+ * post-flop order is useless here: once the players between them fold, an
+ * under-the-gun opener "acts last" against the big blind exactly like the button.
+ */
+function openerRangeFor(ctx: DecisionContext, position: TablePosition | undefined): number {
+  if (position) return openingRange(position, ctx.tableSize ?? 6);
+  const factor = ctx.aggressorPositionFactor ?? 0.5;
+  return factor >= 0.72 ? 0.4 : factor <= 0.42 ? 0.19 : BASELINE_OPEN_RANGE;
+}
+
+/**
+ * Flat/defend width against a single raise of the given width: the big blind
+ * defends widest (closing the action at a discount), the small blind and
+ * out-of-position cold callers tightest. Wider opens are defended wider.
+ */
+function callerRangeFor(
+  position: TablePosition | undefined,
+  inPosition: boolean,
+  openerRange: number,
+): number {
+  const base = position === 'bb' ? 0.42 : position === 'sb' ? 0.23 : inPosition ? 0.24 : 0.17;
+  return base * clamp(Math.sqrt(openerRange / BASELINE_OPEN_RANGE), 0.8, 1.25);
 }
 
 function isPremium(hand: string): boolean {
@@ -1498,21 +1526,27 @@ function preflopRangeForPostflop(ctx: DecisionContext, exploit: Exploit): number
     case 'threeBet':
       fraction = 0.12;
       break;
-    case 'singleRaised':
+    case 'singleRaised': {
+      // The raiser holds an opening range for its seat; a caller holds that
+      // seat's flat/defend range against it (the big blind's is the widest).
+      const openerRange = openerRangeFor(ctx, ctx.preflopAggressorPosition);
       fraction =
-        (ctx.aggressorPositionFactor ?? 0.5) >= 0.72
-          ? 0.34
-          : (ctx.aggressorPositionFactor ?? 0.5) <= 0.42
-            ? 0.19
-            : 0.26;
+        ctx.rangeOpponentRaisedPreflop === false
+          ? callerRangeFor(
+              ctx.rangeOpponentPosition,
+              ctx.rangeOpponentPosition === 'btn' || ctx.rangeOpponentPosition === 'co',
+              openerRange,
+            )
+          : openerRange;
       break;
+    }
     case 'limped':
       fraction = 0.72;
       break;
     default:
       fraction = ctx.preflopRaised === false ? 0.72 : 0.3;
   }
-  if (ctx.aggressorIsHero) fraction *= exploit.rangeMult;
+  if (ctx.rangeOpponentIsProfiled ?? ctx.aggressorIsHero) fraction *= exploit.rangeMult;
   return clamp(fraction, 0.035, 0.86);
 }
 

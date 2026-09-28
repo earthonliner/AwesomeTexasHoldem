@@ -108,6 +108,18 @@ export interface DecisionContext {
   aggressorPositionFactor?: number;
   /** Table position of the relevant aggressor (stable, unlike the live factor). */
   aggressorPosition?: TablePosition;
+  /** Table position of the last pre-flop aggressor. */
+  preflopAggressorPosition?: TablePosition;
+  /**
+   * The opponent whose pre-flop range the post-flop model should assume: the
+   * current/previous-street aggressor when that is an opponent, otherwise the
+   * pre-flop raiser, otherwise the widest live caller (big blind first).
+   */
+  rangeOpponentPosition?: TablePosition;
+  /** Whether that opponent was the last pre-flop aggressor (raiser) or a caller. */
+  rangeOpponentRaisedPreflop?: boolean;
+  /** Whether that opponent is a profiled (human) player. */
+  rangeOpponentIsProfiled?: boolean;
 }
 
 export interface AIDecision {

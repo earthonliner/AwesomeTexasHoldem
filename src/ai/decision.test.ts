@@ -1257,6 +1257,73 @@ describe('cash-game defence vs an early-position open (hard)', () => {
     expect(fourAndHalf - five).toBeLessThan(0.12);
   });
 
+  it('reads the opener by table seat, not by who happens to act last heads-up', () => {
+    // Once the table folds, an under-the-gun opener acts last against the big
+    // blind exactly like the button. K9o defends the button steal only.
+    const defend = (aggressorPosition: 'btn' | 'early') =>
+      decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards('Kh 9d') as [Card, Card],
+          potBefore: 9,
+          toCall: 4,
+          currentBet: 6,
+          streetCommitted: 2,
+          totalCommitted: 2,
+          position: 'bb',
+          positionFactor: 0,
+          tableSize: 6,
+          preflopPotType: 'singleRaised',
+          preflopRaiseCount: 1,
+          aggressorPosition,
+          aggressorPositionFactor: 1,
+          inPositionVsAggressor: false,
+          minRaiseTo: 10,
+        }),
+        rng: seeded(21),
+      }).action;
+    expect(defend('btn')).not.toBe('fold');
+    expect(defend('early')).toBe('fold');
+  });
+
+  it('carries the raiser seat and the caller role into the post-flop range', () => {
+    const flopReason = (partial: Partial<DecisionContext>) =>
+      decide({
+        personality: tag,
+        difficulty: 'hard',
+        ctx: ctx({
+          hole: parseCards('Kh 9d') as [Card, Card],
+          board: parseCards('9s 5c 2d'),
+          street: 'flop',
+          potBefore: 13,
+          toCall: 4,
+          currentBet: 4,
+          tableSize: 6,
+          preflopPotType: 'singleRaised',
+          preflopRaiseCount: 1,
+          ...partial,
+        }),
+        rng: seeded(5),
+        iterations: 200,
+      }).reason;
+    const raiser = (position: 'early' | 'btn') => ({
+      preflopAggressorPosition: position,
+      rangeOpponentPosition: position,
+      rangeOpponentRaisedPreflop: true,
+    });
+    expect(flopReason(raiser('early'))).toContain('pfR=0.19');
+    expect(flopReason(raiser('btn'))).toContain('pfR=0.48');
+    // A big-blind caller leading into an early opener still holds a defend range.
+    expect(
+      flopReason({
+        preflopAggressorPosition: 'early',
+        rangeOpponentPosition: 'bb',
+        rangeOpponentRaisedPreflop: false,
+      }),
+    ).toContain('pfR=0.36');
+  });
+
   it('squeezes bigger with a premium when there are callers behind the raise', () => {
     const aces = parseCards('As Ad') as [Card, Card];
     let hu = 0;
