@@ -377,8 +377,11 @@ export function computeExploit(
   // usual bets a correspondingly wider range with that size. Frequencies are
   // read per street: a player who c-bets half pot on every flop and overbets
   // the turn and river is wide with the flop half-pot bet, which a read pooled
-  // over the streets would dilute. The pooled read stands in until the street
-  // has a sample of its own.
+  // over the streets would dilute. A street's read starts from the player's
+  // own pooled ratios, not the population's, and the street's chances take
+  // over as they accumulate: few hands reach the river, and a stabber whose
+  // river read restarted from the population would look narrow there for
+  // most of a session.
   //
   // The width for one size is how often the player opens at all against the
   // norm (square-rooted), tilted by how strongly it favours this size over the
@@ -392,22 +395,30 @@ export function computeExploit(
   // more rarely it checks when that says more.
   const street = postflopStreet(ctx.street);
   const betWeight = weight * confidence(c.betOpportunities, 30);
-  const sizeRead = (
+  // Betting, checking and each size against the norm, shrunk by ten
+  // pseudo-chances toward a prior ratio (1 for the population).
+  type BetRatios = Record<BetSizeClass | 'bet' | 'check', number>;
+  const betRatios = (
     bets: Record<BetSizeClass, number>,
     chances: number,
     norm: Record<BetSizeClass, number>,
-    size: BetSizeClass,
-  ): number => {
-    const rate = (n: number, prior: number) => (n + prior * 10) / (chances + 10) / prior;
+    prior?: BetRatios,
+  ): BetRatios => {
+    const ratio = (n: number, freq: number, toward = 1) =>
+      (n + freq * toward * 10) / (chances + 10) / freq;
     const total = bets.small + bets.medium + bets.big;
     const normTotal = norm.small + norm.medium + norm.big;
-    const betRate = rate(total, normTotal);
-    const often = betRate > 1 ? Math.max(betRate, 1 / rate(chances - total, 1 - normTotal)) : betRate;
-    const tilt = clamp(
-      Math.pow(rate(bets[size], norm[size]) / betRate, 0.25),
-      0.6,
-      size === 'big' ? 1.9 : 1.2,
-    );
+    return {
+      bet: ratio(total, normTotal, prior?.bet),
+      check: ratio(chances - total, 1 - normTotal, prior?.check),
+      small: ratio(bets.small, norm.small, prior?.small),
+      medium: ratio(bets.medium, norm.medium, prior?.medium),
+      big: ratio(bets.big, norm.big, prior?.big),
+    };
+  };
+  const sizeWidth = (r: BetRatios, size: BetSizeClass): number => {
+    const often = r.bet > 1 ? Math.max(r.bet, 1 / r.check) : r.bet;
+    const tilt = clamp(Math.pow(r[size] / r.bet, 0.25), 0.6, size === 'big' ? 1.9 : 1.2);
     return clamp(Math.sqrt(often) * tilt, 0.75, 1.9);
   };
   const pooledBets = { small: c.smallBets, medium: c.mediumBets, big: c.bigBets };
@@ -419,13 +430,15 @@ export function computeExploit(
       }
     : pooledBets;
   const streetChances = street ? c[streetCounterKey(street, 'BetChances')] : 0;
-  const widthRead = (size: BetSizeClass): number => {
-    const pooled = sizeRead(pooledBets, c.betOpportunities, OPENING_BET_NORM, size);
-    if (!street) return blend(pooled, betWeight);
-    const own = sizeRead(streetBets, streetChances, STREET_OPENING_BET_NORM[street], size);
-    return blend(pooled + (own - pooled) * confidence(streetChances, 16), betWeight);
+  const pooledRatios = betRatios(pooledBets, c.betOpportunities, OPENING_BET_NORM);
+  const ratios = street
+    ? betRatios(streetBets, streetChances, STREET_OPENING_BET_NORM[street], pooledRatios)
+    : pooledRatios;
+  base.betWidth = {
+    small: blend(sizeWidth(ratios, 'small'), betWeight),
+    medium: blend(sizeWidth(ratios, 'medium'), betWeight),
+    big: blend(sizeWidth(ratios, 'big'), betWeight),
   };
-  base.betWidth = { small: widthRead('small'), medium: widthRead('medium'), big: widthRead('big') };
 
   // Checking to a raiser who seldom follows through (c-bet/barrel) hands it
   // free cards, so leads grow; a relentless barreller is the one to check-raise.

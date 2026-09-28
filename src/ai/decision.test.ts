@@ -1154,28 +1154,37 @@ describe('hard exploits the observed human style', () => {
     expect(readOn('river', valueBettor).betWidth.medium).toBeLessThan(1);
   });
 
+  // A quarter-pot stab at 94% of its flop, 80% of its turn and 90% of its river
+  // chances; the population bets a third of flops and half of turns and rivers.
+  const stabber = (riverChances: number, riverStabs: number): HeroProfile => ({
+    ...emptyHeroProfile(),
+    hands: 400,
+    counters: {
+      ...emptyHeroProfile().counters,
+      handsDealt: 400,
+      betOpportunities: 148 + riverChances,
+      smallBets: 130 + riverStabs,
+      flopBetChances: 84,
+      flopSmallBets: 79,
+      turnBetChances: 64,
+      turnSmallBets: 51,
+      riverBetChances: riverChances,
+      riverSmallBets: riverStabs,
+    },
+  });
+
   it('reads a player who stabs nearly every turn and river as wide there too', () => {
-    // A quarter-pot stab at 80% of its turn and 90% of its river chances, where
-    // the population bets about half the time.
-    const stabber: HeroProfile = {
-      ...emptyHeroProfile(),
-      hands: 400,
-      counters: {
-        ...emptyHeroProfile().counters,
-        handsDealt: 400,
-        betOpportunities: 199,
-        smallBets: 176,
-        flopBetChances: 84,
-        flopSmallBets: 79,
-        turnBetChances: 64,
-        turnSmallBets: 51,
-        riverBetChances: 51,
-        riverSmallBets: 46,
-      },
-    };
-    expect(readOn('turn', stabber).betWidth.small).toBeGreaterThan(1.65);
-    expect(readOn('river', stabber).betWidth.small).toBeGreaterThan(1.8);
-    expect(readOn('river', stabber).betWidth.big).toBeLessThan(1.2);
+    expect(readOn('turn', stabber(51, 46)).betWidth.small).toBeGreaterThan(1.65);
+    const river = readOn('river', stabber(51, 46)).betWidth;
+    expect(river.small).toBeGreaterThan(1.8);
+    // It never overbets: that size tilts well below its stabs.
+    expect(river.big).toBeLessThan(river.small - 0.4);
+  });
+
+  it('starts a street with few chances of its own from the pooled read', () => {
+    // Few hands reach the river: 11 stabs in 12 river chances say little yet,
+    // but its flop and turn habit already does.
+    expect(readOn('river', stabber(12, 11)).betWidth.small).toBeGreaterThan(1.85);
   });
 
   it('reads flop c-bets and turn barrels as separate habits', () => {
