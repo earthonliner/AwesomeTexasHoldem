@@ -618,10 +618,26 @@ function decidePreflop(
   const currentLevel = ctx.currentBet ?? ctx.streetCommitted + toCall;
   const wagerBB = currentLevel / bigBlind;
   const mayRaise = ctx.canRaise !== false && ctx.maxRaiseTo > currentLevel;
-  const style = clamp(p.vpip / 0.27, 0.72, 1.4);
+  const style = clamp(p.vpip / 0.27, 0.72, 1.6);
+  // A loose style opens its extra hands where they are playable: in late
+  // position and the small blind, far less under the gun.
+  const openStyle = 1 + (style - 1) * OPEN_STYLE_WEIGHT[position];
   const strength = pct + (rng() - 0.5) * 0.025;
   const effective = Math.max(1, Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack));
   const effectiveDepthBB = (effective + ctx.totalCommitted) / bigBlind;
+  // Folded to it, the small blind raises its opening range and completes a
+  // band below it: half a big blind buys a flop against one player, so live
+  // small blinds seldom hand the big blind a walk.
+  const sbWidths = () => {
+    const openRange =
+      clamp(
+        openingRange('sb', ctx.tableSize ?? 6) * openStyle + exploit.stealBonus,
+        0.08,
+        0.82,
+      ) * shortStackOpenMultiplier(effectiveDepthBB);
+    const completeBand = clamp(SB_COMPLETE_BAND * openStyle, 0, Math.max(0, 0.82 - openRange));
+    return { openRange, completeBand };
+  };
   const reason = [
     `hand=${hand}`,
     `pct=${pct.toFixed(2)}`,
@@ -638,12 +654,15 @@ function decidePreflop(
     }
     // Depth enters at the unopened node already: speculative hands lose their
     // implied odds short, and very short stacks open-jam instead of raise-fold.
-    const openRange =
-      clamp(
-        openingRange(position, ctx.tableSize ?? 6) * style + exploit.stealBonus,
-        0.08,
-        0.82,
-      ) * shortStackOpenMultiplier(effectiveDepthBB);
+    const sb = position === 'sb' ? sbWidths() : null;
+    const openRange = sb
+      ? sb.openRange
+      : clamp(
+          openingRange(position, ctx.tableSize ?? 6) * openStyle + exploit.stealBonus,
+          0.08,
+          0.82,
+        ) * shortStackOpenMultiplier(effectiveDepthBB);
+    const completeBand = sb?.completeBand ?? 0;
     reason.push(`rfi=${openRange.toFixed(2)}`);
     if (effectiveDepthBB <= OPEN_JAM_DEPTH_BB && mayRaise) {
       const jamStrength =
@@ -662,12 +681,13 @@ function decidePreflop(
     const speculative =
       a.rank !== b.rank && isSuitedConnector(a, b, 2) && Math.max(a.rank, b.rank) <= 8;
     if (
-      strength < 1 - openRange ||
+      strength < 1 - openRange - completeBand ||
       (speculative && effectiveDepthBB < SPECULATIVE_CUTOFF_DEPTH_BB)
     ) {
       return mk('fold', 0, rng, false, [...reason, 'pf-rfi-fold']);
     }
     if (!mayRaise) return mk('call', 0, rng, false, [...reason, 'pf-complete']);
+    if (strength < 1 - openRange) return mk('call', 0, rng, false, [...reason, 'pf-sb-complete']);
 
     // The limp branch keeps a small share of premiums (limp-reraise), so a
     // small-blind limp is never a capped range the big blind can attack freely.
@@ -686,7 +706,7 @@ function decidePreflop(
   // limpers add dead money but also callers, so the isolation range tightens
   // while the isolation size grows.
   if (potType === 'limped' || (raises === 0 && limpers > 0)) {
-    const baseOpen = openingRange(position, ctx.tableSize ?? 6) * style;
+    const baseOpen = openingRange(position, ctx.tableSize ?? 6) * openStyle;
     const isoRange = clamp(baseOpen + 0.1 - Math.max(0, limpers - 1) * 0.02, 0.16, 0.58);
     const impliedHand =
       ctx.hole[0].rank === ctx.hole[1].rank ||
@@ -805,7 +825,22 @@ function decidePreflop(
     defendRange *= style;
     defendRange *= ctx.aggressorIsHero ? Math.sqrt(exploit.rangeMult) : 1;
     defendRange += Math.min(0.08, callers * 0.035);
-    defendRange = clamp(defendRange, 0.055, 0.56);
+    // A small blind that completed and is raised by the big blind is getting
+    // a price with a capped range: it keeps the hands it would have raised
+    // and the top of its completing band, instead of limp-folding the band.
+    const completedSb =
+      position === 'sb' &&
+      limpers <= 1 &&
+      ctx.streetCommitted >= bigBlind &&
+      ctx.aggressorPosition === 'bb';
+    if (completedSb) {
+      const { openRange, completeBand } = sbWidths();
+      defendRange = Math.max(
+        defendRange,
+        (openRange + completeBand * 0.4) * Math.exp(-0.2 * Math.max(0, wagerBB - 4)),
+      );
+    }
+    defendRange = clamp(defendRange, 0.055, completedSb ? 0.75 : 0.56);
 
     if (strength < 1 - defendRange) {
       return mk('fold', 0, rng, false, [...reason, `def=${defendRange.toFixed(2)}`]);
@@ -1024,6 +1059,20 @@ function openingRange(
 
 /** Opening width the defend/caller ranges below are calibrated against. */
 const BASELINE_OPEN_RANGE = 0.26;
+
+/** How much of a loose (or tight) style reaches each seat's opening range. */
+const OPEN_STYLE_WEIGHT: Record<TablePosition, number> = {
+  early: 0.6,
+  middle: 0.7,
+  hj: 0.85,
+  co: 1,
+  btn: 1,
+  sb: 1,
+  bb: 1,
+};
+
+/** Hands below its raising range a folded-to small blind completes (style 1). */
+const SB_COMPLETE_BAND = 0.16;
 
 /**
  * Expected width of a single raiser's range from its TABLE position. The live

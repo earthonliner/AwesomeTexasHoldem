@@ -2123,6 +2123,52 @@ describe('live cash styles (hard)', () => {
   const tight = style(0.25, 0.19);
   const loose = style(0.42, 0.3);
 
+  // 6-max (or 9-max), button on the last seat, 100bb; the actions are taken
+  // in turn from the first player to act pre-flop.
+  const table = (seatCount: number, ...actions: [ActionType, number?][]) => {
+    const seats: SeatInit[] = Array.from({ length: seatCount }, (_, i) => ({
+      id: i,
+      name: `P${i}`,
+      isHero: false,
+      stack: 100 * BB_CHIPS,
+    }));
+    const config = { seatCount, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' } as const;
+    return actions.reduce(
+      (g, [type, amount = 0]) => applyAction(g, { type, amount }),
+      startHand(config, seats, seatCount - 1, 1, () => 0.42),
+    );
+  };
+  const spot = (...actions: [ActionType, number?][]) => {
+    const game = table(6, ...actions);
+    return buildDecisionContext(game, game.toAct);
+  };
+  const act = (p: Personality, c: DecisionContext, hole: string, seed = 1) =>
+    decide({
+      personality: p,
+      difficulty: 'hard',
+      ctx: { ...c, hole: parseCards(hole) as [Card, Card] },
+      rng: seeded(seed),
+    });
+  // Share of all 1326 starting hands the player raises first in.
+  const openShare = (p: Personality, c: DecisionContext) => {
+    const deck = makeDeck();
+    let opens = 0;
+    let combos = 0;
+    for (let i = 0; i < deck.length; i++) {
+      for (let j = i + 1; j < deck.length; j++) {
+        const d = decide({
+          personality: p,
+          difficulty: 'hard',
+          ctx: { ...c, hole: [deck[i], deck[j]] },
+          rng: seeded(i * 52 + j),
+        });
+        combos++;
+        if (d.action === 'raise' || d.action === 'allin') opens++;
+      }
+    }
+    return opens / combos;
+  };
+
   it('deals tight-aggressive, loose-aggressive and very loose seats', () => {
     const vpips = Array.from({ length: 200 }, (_, s) => generatePersonality('hard', seeded(s + 500)).vpip);
     const share = (test: (v: number) => boolean) => vpips.filter(test).length / vpips.length;
@@ -2131,6 +2177,67 @@ describe('live cash styles (hard)', () => {
     expect(share((v) => v >= 0.36)).toBeGreaterThan(0.15);
     expect(describePersonality(loose)).toBe('松凶/LAG');
     expect(describePersonality(tight)).toBe('紧凶/TAG');
+  });
+
+  it('opens a loose style its extra hands in late position, not under the gun', () => {
+    const utg = spot();
+    const button = spot(['fold'], ['fold'], ['fold']);
+    expect(openShare(loose, utg)).toBeLessThan(0.28);
+    expect(openShare(loose, button)).toBeGreaterThan(0.65);
+    expect(openShare(tight, button)).toBeLessThan(0.5);
+  });
+
+  it('completes a band of small-blind hands below its raising range when folded to', () => {
+    const sb = spot(['fold'], ['fold'], ['fold'], ['fold']);
+    const actions = (hole: string) =>
+      Array.from({ length: 12 }, (_, s) => act(tight, sb, hole, s + 40).action);
+    expect(actions('Ah 2d').every((a) => a === 'call')).toBe(true);
+    expect(actions('Jh 8d').every((a) => a === 'call')).toBe(true);
+    expect(actions('7d 2c').every((a) => a === 'fold')).toBe(true);
+  });
+
+  it('defends the top of its completing band against a raise from the big blind', () => {
+    const raised = spot(['fold'], ['fold'], ['fold'], ['fold'], ['call'], ['raise', 4 * BB_CHIPS]);
+    expect(raised.toCall).toBe(3 * BB_CHIPS);
+    const actions = (hole: string) =>
+      Array.from({ length: 12 }, (_, s) => act(tight, raised, hole, s + 60).action);
+    expect(actions('Ah 3d').every((a) => a === 'call')).toBe(true);
+    expect(actions('Jh 8d').every((a) => a === 'fold')).toBe(true);
+  });
+
+  it('rarely hands the big blind a walk', () => {
+    const walkRate = (seatCount: number, hands: number) => {
+      let walks = 0;
+      for (let h = 0; h < hands; h++) {
+        const players = Array.from({ length: seatCount }, (_, i) =>
+          generatePersonality('hard', seeded(h * 31 + i + 7)),
+        );
+        let game = startHand(
+          { seatCount, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' },
+          Array.from({ length: seatCount }, (_, i) => ({ id: i, name: `P${i}`, isHero: false, stack: 100 * BB_CHIPS })),
+          h % seatCount,
+          h + 1,
+          seeded(h + 11),
+        );
+        let walk = false;
+        while (game.status === 'betting' && game.street === 'preflop') {
+          const idx = game.toAct;
+          const d = decide({
+            personality: players[idx],
+            difficulty: 'hard',
+            ctx: buildDecisionContext(game, idx),
+            rng: seeded(h * 977 + idx),
+          });
+          if (d.action !== 'fold') break;
+          game = applyAction(game, { type: 'fold', amount: 0 });
+          walk = game.status !== 'betting';
+        }
+        if (walk) walks++;
+      }
+      return walks / hands;
+    };
+    expect(walkRate(6, 600)).toBeLessThan(0.08);
+    expect(walkRate(9, 400)).toBeLessThan(0.05);
   });
 
   it('barrels and bluffs the river more as a loose-aggressive player', () => {
