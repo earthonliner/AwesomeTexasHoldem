@@ -1,9 +1,10 @@
 /**
  * Behaviour of a hard-AI table playing itself (6-max, 100bb by default):
- * looseness, pre-flop aggression, how often the big blind gets a walk,
- * post-flop c-bets / barrels / check-raises, the bluff share of the bets, and
- * showdown rates. Seat 0 stands in for the human: its profile is kept and
- * handed to the AIs while it is in the hand, as the single-player store does.
+ * looseness, opens by position, how often the big blind gets a walk,
+ * post-flop c-bets / barrels / check-raises, how often multiway pots check
+ * through, the bluff share of the bets, and showdown rates. Seat 0 stands in
+ * for the human: its profile is kept and handed to the AIs while it is in the
+ * hand, as the single-player store does.
  *
  *   npx tsx scripts/ai-eval/population.ts [hands=3000] [seeds=4242,777] [seats=6]
  *
@@ -89,6 +90,13 @@ const rates = {
   donk: new Rate(),
   turnBarrel: new Rate(),
   riverBet: new Rate(),
+  /** River opening bets with two players acting on the river, and with three or more. */
+  riverBetHeadsUp: new Rate(),
+  riverBetMultiway: new Rate(),
+  /** Flops seen by three or more players that reach the river with no bet on any street. */
+  multiwayCheckedThrough: new Rate(),
+  /** Of those whose flop and turn checked through, the share whose river checks through as well. */
+  multiwayRiverCheck: new Rate(),
   sawFlop: new Rate(),
   wentToShowdown: new Rate(),
   wonAtShowdown: new Rate(),
@@ -102,6 +110,12 @@ const rates = {
   /** Answer of a post-flop bettor whose bet gets raised: fold / call / re-raise. */
   raisedBettor: new Answers(),
 };
+
+/** Seats folded to before the big blind, by table position: raises and limps (completes). */
+const foldedTo: Record<string, { n: number; raise: number; limp: number }> = {};
+/** Folded-to small blinds that complete with a hand below their raising range. */
+let sbCompletes = 0;
+const riverHands = { headsUp: 0, multiway: 0 };
 
 /** FNV-1a style mix of the coordinates of one decision into a seed. */
 function decisionSeed(...coordinates: number[]): number {
@@ -170,6 +184,20 @@ function collect(game: GameState, seatTallies: SeatTally[], bluffs: Map<string, 
       }
     } else if (a.type === 'call') {
       folded = false;
+    }
+  }
+  for (const a of pre) {
+    const pos = position(a.playerId);
+    if (pos === 'bb') break;
+    const t = (foldedTo[pos] ??= { n: 0, raise: 0, limp: 0 });
+    t.n++;
+    if (AGGRESSIVE.has(a.type)) {
+      t.raise++;
+      break;
+    }
+    if (a.type === 'call') {
+      t.limp++;
+      break;
     }
   }
 
@@ -246,7 +274,20 @@ function collect(game: GameState, seatTallies: SeatTally[], bluffs: Map<string, 
     }
   }
 
+  if (flopPlayers.size >= 3) {
+    const unbet = (street: string) => !h.some((a) => a.street === street && AGGRESSIVE.has(a.type));
+    const reachedRiver = h.some((a) => a.street === 'river');
+    rates.multiwayCheckedThrough.add(reachedRiver && unbet('flop') && unbet('turn') && unbet('river'));
+    if (reachedRiver && unbet('flop') && unbet('turn')) rates.multiwayRiverCheck.add(unbet('river'));
+  }
+
   const river = h.filter((a) => a.street === 'river');
+  const headsUpRiver = new Set(river.map((a) => a.playerId)).size === 2;
+  if (river.length > 0) riverHands[headsUpRiver ? 'headsUp' : 'multiway']++;
+  for (const a of river) {
+    (headsUpRiver ? rates.riverBetHeadsUp : rates.riverBetMultiway).add(AGGRESSIVE.has(a.type));
+    if (AGGRESSIVE.has(a.type)) break;
+  }
   const lastRiverAggressor = [...river].reverse().find((a) => AGGRESSIVE.has(a.type));
   if (lastRiverAggressor && game.revealed.includes(lastRiverAggressor.playerId)) {
     rates.riverBetShownWeak.add(belowTopPair(game, lastRiverAggressor.playerId, 'river'));
@@ -288,6 +329,7 @@ function runSession(hands: number, seed: number, seatCount: number, seatTallies:
       });
       ms += performance.now() - started;
       decisions++;
+      if (decision.reason.includes('pf-sb-complete')) sbCompletes++;
       if (game.street !== 'preflop' && (decision.action === 'raise' || decision.action === 'allin')) {
         const index = game.history.filter((a) => a.street === game.street).length;
         bluffs.set(`${game.street}:${index}`, decision.isBluff);
@@ -340,6 +382,12 @@ const rows: [string, string][] = [
   ['Donk lead', `${rates.donk}`],
   ['Turn barrel after a flop c-bet', `${rates.turnBarrel}`],
   ['River opening bet', `${rates.riverBet}`],
+  [
+    '  … heads-up / multiway (rivers)',
+    `${rates.riverBetHeadsUp} / ${rates.riverBetMultiway} (${riverHands.headsUp} / ${riverHands.multiway})`,
+  ],
+  ['Multiway flops checked through all streets', `${rates.multiwayCheckedThrough} (n=${rates.multiwayCheckedThrough.n})`],
+  ['  … river checked after a checked flop and turn', `${rates.multiwayRiverCheck} (n=${rates.multiwayRiverCheck.n})`],
   ['Bluff share of bets+raises flop / turn / river', `${rates.bluffShare.flop} / ${rates.bluffShare.turn} / ${rates.bluffShare.river}`],
   ['Post-flop raises made with less than top pair', `${rates.postflopRaiseWeak}`],
   ['Raised post-flop bettor: fold / call / re-raise', `${rates.raisedBettor}`],
@@ -348,6 +396,17 @@ const rows: [string, string][] = [
   ['Hands with an all-in', `${rates.allInHand}`],
 ];
 for (const [label, value] of rows) console.log(`  ${label.padEnd(50)} ${value}`);
+
+console.log('\n  folded to        n   raise   limp   fold');
+const order = ['early', 'middle', 'hj', 'co', 'btn', 'sb'];
+for (const pos of [...order, ...Object.keys(foldedTo).filter((k) => !order.includes(k))]) {
+  const t = foldedTo[pos];
+  if (!t) continue;
+  const pct = (x: number) => `${((100 * x) / t.n).toFixed(1)}%`.padStart(6);
+  console.log(`  ${pos.padEnd(9)} ${String(t.n).padStart(6)}  ${pct(t.raise)} ${pct(t.limp)} ${pct(t.n - t.raise - t.limp)}`);
+}
+const sbFoldedTo = foldedTo.sb?.n ?? 0;
+console.log(`  small blind completes below its raising range: ${((100 * sbCompletes) / Math.max(1, sbFoldedTo)).toFixed(1)}% of folded-to`);
 
 console.log('\n  seed seat   vpip-param  VPIP   PFR    AF    bluffs  bb/100');
 for (const { seed, seat, p, t } of players) {
