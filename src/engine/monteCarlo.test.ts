@@ -267,4 +267,25 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
     expect(smallBet).toBeLessThan(noBet);
     expect(bigBet).toBeLessThan(smallBet);
   });
+
+  it('reads a re-raise far narrower than the raise it answers', () => {
+    const spot = { street: 'turn' as const, facingBet: true, toCall: 40, pot: 60, betToPot: 1 };
+    const raise = estimateRangeFraction({ ...spot, aggressionCount: 2 });
+    const reraise = estimateRangeFraction({ ...spot, aggressionCount: 3 });
+    expect(reraise).toBeLessThan(raise * 0.7);
+    const bluffs = (aggressionCount: number) =>
+      estimateBluffShare({ facingBet: true, liveOpponents: 1, wetness: 0.3, betToPot: 1, aggressionCount });
+    expect(bluffs(3)).toBeLessThan(bluffs(2));
+  });
+
+  it('leaves the strongest share of the value range out with valueSkip', () => {
+    // Top pair against the value range of a bettor: without its sets and two
+    // pair (the hands that would re-raise) the same range is much weaker.
+    const heroCards = hero('Ah Kd');
+    const board = parseCards('Ks 7c 2d 4h');
+    const opts = { heroCards, board, opponents: 1, iterations: 3000, rangeFraction: 0.25 };
+    const all = estimateEquityVsRange({ ...opts, rng: seeded(61) });
+    const callers = estimateEquityVsRange({ ...opts, rng: seeded(61), valueSkip: 0.3 });
+    expect(callers.equity).toBeGreaterThan(all.equity + 0.1);
+  });
 });

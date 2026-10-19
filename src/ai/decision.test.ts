@@ -1243,7 +1243,7 @@ describe('hard exploits the observed human style', () => {
     expect(readOn('turn', barrels('turnBigBets')).leadMult).toBeLessThan(0.8);
   });
 
-  it('raises the stabs of a player who folds to raises with any hand', () => {
+  it('raises the stabs of a player who folds to raises', () => {
     const flop = parseCards('Ks 7c 2d');
     const standard = responses('Qh Jd', flop, 0.3).raise;
     const folder = responses('Qh Jd', flop, 0.3, raisedBettor(32)).raise;
@@ -1257,6 +1257,41 @@ describe('hard exploits the observed human style', () => {
     expect(sticky).toBeLessThan(standard - 0.1);
     // Folding to raises at the usual rate adds no light raises.
     expect(responses('Qh Jd', parseCards('Ks 7c 2d'), 0.3, raisedBettor(16)).raise).toBeLessThan(0.2);
+  });
+
+  // 40 of the player's bets were raised: it folded 16 of them and re-raised `reraised`.
+  const reraiser = (reraised: number): HeroProfile => {
+    const profile = raisedBettor(16);
+    return { ...profile, counters: { ...profile.counters, raisesReraised: reraised } };
+  };
+
+  it('reads how often a player re-raises when its bet is raised', () => {
+    const spot = ctx({
+      hole: parseCards('Ah Kd') as [Card, Card],
+      board: parseCards('Ks 7c 2d'),
+      street: 'flop',
+      aggressorIsHero: true,
+    });
+    expect(computeExploit('hard', spot).reraise).toBeCloseTo(0.09);
+    expect(computeExploit('hard', spot, reraiser(16)).reraise).toBeGreaterThan(0.3);
+    expect(computeExploit('hard', spot, reraiser(0)).reraise).toBeLessThan(0.03);
+  });
+
+  it('calls instead of raising one pair into a player who raises back', () => {
+    const turn = parseCards('Ks 7c 2d 4h');
+    const norm = responses('Ah Kd', turn, 0.33, reraiser(4)).raise;
+    const trapper = responses('Ah Kd', turn, 0.33, reraiser(16)).raise;
+    expect(norm).toBeGreaterThan(0.35);
+    expect(trapper).toBeLessThan(0.1);
+    // A set stands the re-raise and keeps raising.
+    expect(responses('7h 7d', turn, 0.33, reraiser(16)).raise).toBeGreaterThan(0.4);
+  });
+
+  it('raises a raise-folder light only with hands that cannot win a showdown', () => {
+    const flop = parseCards('Ks 7c 2d');
+    expect(responses('Qh Jd', flop, 0.3, raisedBettor(32)).raise).toBeGreaterThan(0.2);
+    // Middle pair beats the stabs it would raise off: it calls them.
+    expect(responses('7h 6h', flop, 0.3, raisedBettor(32)).raise).toBeLessThan(0.06);
   });
 });
 

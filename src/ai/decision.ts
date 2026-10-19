@@ -283,8 +283,10 @@ export interface Exploit {
   leadMult: number;
   /** Fold-equity multiplier for raising the hero's post-flop bets. */
   raiseFold: number;
-  /** Extra chance to raise the hero's bets with any hand once it is seen folding to raises. */
+  /** Extra chance to raise the hero's bets with hands without showdown value once it is seen folding to raises. */
   lightRaise: number;
+  /** Share of the hero's raised post-flop bets that it re-raises. */
+  reraise: number;
   /** Fold-equity multiplier for opening bets into the hero on the river. */
   riverFold: number;
 }
@@ -319,6 +321,7 @@ export function computeExploit(
     leadMult: 1,
     raiseFold: 1,
     lightRaise: 0,
+    reraise: RAISE_RERAISE_NORM,
     riverFold: 1,
   };
   if (difficulty !== 'hard' || !profile) return base;
@@ -492,6 +495,12 @@ export function computeExploit(
   const raiseWeight = weight * confidence(c.raisesFaced, 12);
   base.raiseFold = base.foldPressure + (raiseRead - base.foldPressure) * raiseWeight;
   base.lightRaise = clamp((raiseRead - 1.1) * 0.7, 0, 0.35) * raiseWeight;
+  // A player who slow-plays its strong hands and raises back with them when
+  // raised is where a raise with a medium hand loses its chips; one that never
+  // re-raises lets the raise see the showdown or the next street.
+  const reraiseRate =
+    ((c.raisesReraised ?? 0) + RAISE_RERAISE_NORM * 6) / (c.raisesFaced + 6);
+  base.reraise = RAISE_RERAISE_NORM + (reraiseRate - RAISE_RERAISE_NORM) * weight;
 
   // A river bet meets a finished hand, unlike the c-bets and steals behind the
   // general fold read: a player who calls every river bet, or folds all but
@@ -547,6 +556,8 @@ function postflopStreet(street: DecisionContext['street']): PostflopStreet | nul
 }
 /** Fold rate to a raise that the base raise fold equity (`estimateFoldEquity`) assumes. */
 const RAISE_FOLD_NORM = 0.4;
+/** Share of raised post-flop bets the hard-AI population re-raises (6-max, 100bb). */
+const RAISE_RERAISE_NORM = 0.09;
 
 export function decide(opts: DecideOptions): AIDecision {
   const { personality: p, difficulty, ctx, rng = defaultRng, heroProfile } = opts;
@@ -1369,11 +1380,14 @@ function decidePostflop(
   const allInBettor = !!baseRangeOptions.bettorAllIn;
   const allInCallers = baseRangeOptions.allInCallers ?? 0;
   const calledEquityCache = new Map<number, { all: number; live: number }>();
-  const calledEquity = (foldEquity: number): { all: number; live: number } => {
-    const key = Math.round(clamp(foldEquity, 0, 0.85) * 20);
+  /** `reraised`: share of the continuing value range that re-raises instead and is left out. */
+  const calledEquity = (foldEquity: number, reraised = 0): { all: number; live: number } => {
+    const foldKey = Math.round(clamp(foldEquity, 0, 0.85) * 20);
+    const skipKey = Math.round(clamp(reraised, 0, 0.6) * 20);
+    const key = foldKey * 100 + skipKey;
     const cached = calledEquityCache.get(key);
     if (cached !== undefined) return cached;
-    const perPlayerFold = Math.pow(key / 20, 1 / responders);
+    const perPlayerFold = Math.pow(foldKey / 20, 1 / responders);
     const continueShare = clamp(1 - perPlayerFold, 0.15, 1);
     const continuing = clamp(Math.round(responders * (1 - perPlayerFold)), 1, responders);
     const shrink = (n: number) => Math.min(n, continuing);
@@ -1394,6 +1408,7 @@ function decidePostflop(
       // Most bluffs release against aggression; a few continue as re-bluffs.
       // An all-in bettor's bluffs stay in the pot.
       bluffShare: allInBettor ? bluffShare : facingBet ? bluffShare * 0.3 : 0,
+      valueSkip: skipKey / 20,
     });
     const value = { all: result.equity, live: result.equityVsLive ?? result.equity };
     calledEquityCache.set(key, value);
@@ -1420,6 +1435,24 @@ function decidePostflop(
       called.live * (sidePot + sized.heroRisk - call + sized.callerContribution) -
       sized.heroRisk;
     return foldEquity * foldedEV + (1 - foldEquity) * calledEV;
+  };
+  // A raise of a bet meets a fold, a call or a re-raise. The top of the
+  // continuing range re-raises, and a hand that cannot stand a re-raise gives
+  // its raise up there, so its called branch is played only against the hands
+  // that just call. Heads-up; multiway the next player's answer dominates.
+  const reraiseRate = ctx.aggressorIsHero ? exploit.reraise : RAISE_RERAISE_NORM;
+  const raiseEV = (sized: Sized, foldEquity: number, standsReraise: boolean): number => {
+    if (standsReraise || layered || responders > 1 || allInBettor || sized.allIn) {
+      return aggressiveEV(sized, foldEquity);
+    }
+    const reraised = clamp(reraiseRate / Math.max(0.15, 1 - foldEquity), 0, 0.6);
+    const called = calledEquity(foldEquity, reraised);
+    const calledEV =
+      called.all * (potBefore + sized.heroRisk + sized.callerContribution) - sized.heroRisk;
+    return (
+      foldEquity * potBefore +
+      (1 - foldEquity) * ((1 - reraised) * calledEV - reraised * sized.heroRisk)
+    );
   };
   // Checking realises (most of) the current equity; on the river it is the
   // showdown value itself. Marginal hands realise less out of position and
@@ -1809,10 +1842,15 @@ function decidePostflop(
   const checkRaiseSpot = !!ctx.checkedThisStreet && (ctx.streetAggressionCount ?? 1) === 1;
   const raisePressure = ctx.aggressorIsHero ? exploit.raiseFold : exploit.foldPressure;
   // Against a bettor seen folding to raises far above the norm, a raise is a
-  // bluff of its own with any hand that would otherwise just call or fold.
+  // bluff of its own with a hand that would otherwise just call or fold. Only
+  // with no showdown value: a pair that beats the bettor's stabs calls them,
+  // instead of turning into a bluff that its strong hands raise back.
+  const noShowdownValue =
+    features.category === HandCategory.HighCard || features.pairKind === 'under';
   const lightRaise = (): AIDecision | null => {
     if (
       exploit.lightRaise <= 0 ||
+      !noShowdownValue ||
       !mayRaise ||
       !ctx.aggressorIsHero ||
       opponents > 1 ||
@@ -1822,7 +1860,7 @@ function decidePostflop(
     }
     const foldEquity = estimateFoldEquity(ctx, exploit, bluffSize, features, true);
     const sized = sizeRaise(ctx, bluffSize, rng, committed, Infinity, 0, inPosition ? 2.8 : 3.3);
-    const deltaEV = aggressiveEV(sized, foldEquity) - Math.max(evCall, 0);
+    const deltaEV = raiseEV(sized, foldEquity, false) - Math.max(evCall, 0);
     if (rng() >= exploit.lightRaise * indifferenceGate(deltaEV)) return null;
     return mk(
       sized.allIn ? 'allin' : 'raise',
@@ -1861,9 +1899,12 @@ function decidePostflop(
         inPosition ? 2.7 : 3.2,
       );
       // A value raise has to beat calling, not merely be profitable: raising
-      // folds out the bluffs we beat and gets called by a stronger slice.
+      // folds out the bluffs we beat and gets called by a stronger slice, and
+      // a medium hand folds to the strongest slice's re-raise.
       const foldEquity = estimateFoldEquity(ctx, exploit, size, features, true);
-      const deltaEV = aggressiveEV(sized, foldEquity) - evCall;
+      const standsReraise =
+        nutRange || (features.category >= HandCategory.TwoPair && eq >= 0.72);
+      const deltaEV = raiseEV(sized, foldEquity, standsReraise) - evCall;
       if (nutRange || rng() < indifferenceGate(deltaEV)) {
         return mk(
           sized.allIn ? 'allin' : 'raise',
@@ -1888,7 +1929,7 @@ function decidePostflop(
         0,
         inPosition ? 2.75 : 3.25,
       );
-      const deltaEV = aggressiveEV(sized, foldEquity) - Math.max(evCall, 0);
+      const deltaEV = raiseEV(sized, foldEquity, false) - Math.max(evCall, 0);
       // Strong draws are the natural check-raise bluffs: they balance the
       // value check-raises and keep equity when called.
       const checkRaiseBluff = checkRaiseSpot
@@ -1928,7 +1969,7 @@ function decidePostflop(
       inPosition ? 2.8 : 3.3,
     );
     // Folding is worth zero; the bluff-raise must compete with that AND the call.
-    const deltaEV = aggressiveEV(sized, foldEquity) - Math.max(evCall, 0);
+    const deltaEV = raiseEV(sized, foldEquity, false) - Math.max(evCall, 0);
     if (rng() < bluffFrequency * 0.35 * indifferenceGate(deltaEV)) {
       return mk(sized.allIn ? 'allin' : 'raise', sized.amount, rng, true, [...reason, 'blocker-bluff-raise'], true);
     }

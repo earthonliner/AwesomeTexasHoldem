@@ -228,9 +228,10 @@ export interface HeroProfile {
     /** Of those, streets where the hero drove the previous street, and its bets there. */
     continuationChances: number;
     continuationBets: number;
-    /** Post-flop streets where a hero bet or raise was raised, and the folds there. */
+    /** Post-flop streets where a hero bet or raise was raised, and the folds and re-raises there. */
     raisesFaced: number;
     raisesFolded: number;
+    raisesReraised: number;
     /** Rivers where the hero faced the opening bet, and the folds to it. */
     riverBetsFaced: number;
     riverBetFolds: number;
