@@ -209,6 +209,67 @@ export const BOTS: Record<string, Bot> = {
     return act('fold');
   },
 
+  /**
+   * Slow-plays two pair or better: checks or calls it on the flop, then bets or
+   * raises it on the turn and river and re-raises when raised. Stabs air at
+   * every chance about half the time and gives it up when raised, so its bets
+   * are either very strong or air and a raise looks like it gets folds.
+   */
+  trapper: (game, seat, rng) => {
+    if (game.street === 'preflop') {
+      return preflopByChart(game, seat, { open: 0.24, threeBet: 0.03, call: 0.16, callThreeBet: 0.05, fourBet: 0.02, openSizeBB: 3 });
+    }
+    const h = readHand(game, seat);
+    const raised = game.history.some(
+      (a) => a.street === game.street && a.playerId === game.players[seat].id && AGGRESSIVE.has(a.type),
+    );
+    if (h.monster) {
+      if (game.street === 'flop') return passive(game, seat);
+      if (h.toCall === 0) return aggress(game, seat, betTo(game, seat, game.street === 'river' ? 0.75 : 0.6));
+      return aggress(game, seat, raiseTimes(game, seat, 3));
+    }
+    if (raised) return h.top && h.betFraction <= 0.5 ? act('call') : act('fold');
+    if (h.toCall === 0) {
+      if (h.top && rng() < 0.6) return aggress(game, seat, betTo(game, seat, 0.5));
+      if ((h.air || h.gutshot) && rng() < 0.5) return aggress(game, seat, betTo(game, seat, 0.5));
+      if (h.draw && rng() < 0.3) return aggress(game, seat, betTo(game, seat, 0.5));
+      return act('check');
+    }
+    if (h.top) return act('call');
+    if (h.anyPair && h.betFraction <= 0.5) return act('call');
+    if (h.draw && game.street !== 'river' && h.betFraction <= 0.75) return act('call');
+    return act('fold');
+  },
+
+  /**
+   * Hides two pair or better until the river: checks and calls with it on the
+   * flop and turn, then bets 3/4 pot or raises 3x on the river. Otherwise plays
+   * ABC: c-bets 60% as the pre-flop raiser, bets top pair, calls top pair and draws.
+   */
+  slowplayer: (game, seat, rng) => {
+    if (game.street === 'preflop') {
+      return preflopByChart(game, seat, { open: 0.24, threeBet: 0.04, call: 0.15, callThreeBet: 0.05, fourBet: 0.025, openSizeBB: 3 });
+    }
+    const h = readHand(game, seat);
+    const me = game.players[seat].id;
+    const raisedPreflop =
+      [...game.history].reverse().find((a) => a.street === 'preflop' && AGGRESSIVE.has(a.type))?.playerId === me;
+    if (h.monster) {
+      if (game.street !== 'river') return passive(game, seat);
+      return h.toCall === 0 ? aggress(game, seat, betTo(game, seat, 0.75)) : aggress(game, seat, raiseTimes(game, seat, 3));
+    }
+    if (h.toCall === 0) {
+      if (h.top && rng() < 0.7) return aggress(game, seat, betTo(game, seat, 0.55));
+      if (game.street === 'flop' && raisedPreflop && rng() < 0.6) return aggress(game, seat, betTo(game, seat, 0.5));
+      if (h.draw && rng() < 0.35) return aggress(game, seat, betTo(game, seat, 0.55));
+      return act('check');
+    }
+    if (h.top) return h.betFraction <= 1 ? act('call') : act('fold');
+    if (h.draw && game.street !== 'river' && h.betFraction <= 0.75) return act('call');
+    if (h.anyPair && game.street === 'flop' && h.betFraction <= 0.6) return act('call');
+    return act('fold');
+  },
+
   /** Straightforward "ABC" poker: bets value and some draws, calls top pair, rarely bluffs. */
   abc: (game, seat, rng) => {
     if (game.street === 'preflop') {
