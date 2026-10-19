@@ -4,6 +4,7 @@ import type { Difficulty } from '../engine/gameTypes';
 import { HandCategory } from '../engine/types';
 import {
   DEFAULT_CHECKED_CAP_TIER,
+  cheapBetShare,
   estimateEquity,
   estimateEquityVsRange,
   estimateRangeFraction,
@@ -1205,6 +1206,9 @@ function decidePostflop(
   const facingBet = ctx.toCall > 0;
   const features = analyseHand(ctx.hole, ctx.board);
   const wet = boardWetness(ctx.board);
+  const commit = facingBet
+    ? clamp(ctx.toCall / Math.max(1, Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack)), 0, 1)
+    : undefined;
 
   let rangeFraction = estimateRangeFraction({
     street: ctx.street,
@@ -1214,6 +1218,7 @@ function decidePostflop(
     betToPot: ctx.betToPot,
     aggressionCount: ctx.streetAggressionCount,
     preflopPotType: ctx.preflopPotType,
+    commit,
   });
   if (ctx.facingCheckRaise) rangeFraction *= 0.62;
   if (ctx.aggressorIsHero) rangeFraction *= exploit.rangeMult;
@@ -1231,11 +1236,17 @@ function decidePostflop(
     !!ctx.allIn?.bettor &&
     exploit.usualBetSize !== null &&
     sizeRank(heroBetSize) < sizeRank(exploit.usualBetSize);
-  const heroBetWidth = !heroBetSize
+  const readBetWidth = !heroBetSize
     ? 1
     : forcedSize
       ? exploit.usedBetWidth
       : exploit.betWidth[heroBetSize];
+  // A habit of big bets is mostly learned where they are cheap; the same size
+  // that puts the stack in comes from a tighter range even for an overbettor.
+  const heroBetWidth =
+    heroBetSize === 'big' && !forcedSize && readBetWidth > 1
+      ? 1 + (readBetWidth - 1) * (0.5 + 0.5 * cheapBetShare(commit))
+      : readBetWidth;
   rangeFraction = clamp(rangeFraction * heroBetWidth, 0.07, 0.88);
 
   let bluffShare = estimateBluffShare({
@@ -1245,6 +1256,7 @@ function decidePostflop(
     betToPot: ctx.betToPot,
     aggressionCount: ctx.streetAggressionCount,
     street: ctx.street,
+    commit,
   });
   if (ctx.facingCheckRaise) bluffShare *= 0.62;
   if (facingBet && ctx.aggressorIsHero) {

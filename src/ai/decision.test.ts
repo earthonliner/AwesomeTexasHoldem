@@ -1091,6 +1091,35 @@ describe('hard exploits the observed human style', () => {
     expect(foldRate('6h 6d', turn, 1.2, bettor('smallBets'))).toBeGreaterThan(overbettor + 0.3);
   });
 
+  // A 2x-pot flop bet into a small pot (11 chips, 195 behind) or into a big
+  // one (80 chips, all 160 left): the same price, a different bet.
+  const overbetFold = (hole: string, smallPot: boolean, profile?: HeroProfile) => {
+    const pot = smallPot ? 11 : 80;
+    const stack = smallPot ? 195 : 160;
+    return foldRate(hole, parseCards('Ks 7d 2c'), 2, profile, {
+      potBefore: pot * 3,
+      toCall: pot * 2,
+      currentBet: pot * 2,
+      minRaiseTo: pot * 4,
+      stack,
+      effectiveStack: stack,
+      maxRaiseTo: stack,
+      winnablePot: pot + 2 * Math.min(pot * 2, stack),
+      positionFactor: 0.2,
+    });
+  };
+
+  it('defends a cheap overbet into a small pot wider than one that commits the stack', () => {
+    expect(overbetFold('Ah 7c', true)).toBeLessThan(overbetFold('Ah 7c', false) - 0.15);
+  });
+
+  it('carries an overbettor read only partly into the overbets that put the stack in', () => {
+    const overbettor = bettor('bigBets');
+    expect(overbetFold('8h 8d', true, overbettor)).toBeLessThan(0.15);
+    expect(overbetFold('8h 8d', false, overbettor)).toBeGreaterThan(0.45);
+    expect(overbetFold('8h 8d', false, overbettor)).toBeLessThan(overbetFold('8h 8d', false) - 0.1);
+  });
+
   it('reads a short all-in by the sizes the player bets, not the size it was left with', () => {
     // 24 chips into a 40-chip pot are all it has left: it could not overbet.
     const turn = parseCards('Ks 9c 4d 2h');

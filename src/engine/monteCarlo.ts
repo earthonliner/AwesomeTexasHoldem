@@ -709,16 +709,32 @@ export function estimateBluffShare(args: {
   betToPot?: number;
   aggressionCount?: number;
   street?: 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
+  /** Share of the effective stack the bet asks for (see `cheapBetShare`). */
+  commit?: number;
 }): number {
   if (!args.facingBet) return 0;
   let base = 0.3 + args.wetness * 0.1;
-  // Large river bets are naturally more polar; repeated raises are value-heavy.
-  if ((args.betToPot ?? 0) >= 0.8) base += 0.05;
+  // Large bets are naturally more polar, and a large bet that risks little of
+  // the stack is the cheapest bluff there is; repeated raises are value-heavy.
+  if ((args.betToPot ?? 0) >= 0.8) base += 0.05 + 0.05 * cheapBetShare(args.commit);
   if (args.street === 'river') base += 0.02;
   if ((args.aggressionCount ?? 1) >= 2) base *= 0.7;
   if ((args.aggressionCount ?? 1) >= 3) base *= 0.7;
   const multiwayDamp = Math.sqrt(Math.max(1, args.liveOpponents));
   return Math.min(0.5, Math.max(0.08, base / multiwayDamp));
+}
+
+/**
+ * How cheap a bet is in stack terms, from 1 (it asks for a tenth of the
+ * effective stack or less) to 0 (a third or more). Pot odds depend on the size
+ * relative to the pot alone, but a pot-sized or bigger bet into a small pot
+ * commits nothing: it is a cheap way to bluff or to build a pot with a merely
+ * good hand, while the same size into a big pot puts the stack in and comes
+ * from a polar, value-heavy range.
+ */
+export function cheapBetShare(commit: number | undefined): number {
+  if (commit === undefined) return 0;
+  return Math.min(1, Math.max(0, (0.35 - commit) / 0.25));
 }
 
 /**
@@ -734,14 +750,19 @@ export function estimateRangeFraction(args: {
   betToPot?: number;
   aggressionCount?: number;
   preflopPotType?: 'unopened' | 'limped' | 'singleRaised' | 'threeBet' | 'fourBetPlus';
+  /** Share of the effective stack the bet asks for (see `cheapBetShare`). */
+  commit?: number;
 }): number {
   const { street, facingBet, toCall, pot } = args;
   let fraction = facingBet ? 0.38 : 0.62;
 
-  // Bigger bets relative to the pot represent stronger, more polarized ranges.
+  // Bigger bets relative to the pot represent stronger, more polarized ranges,
+  // as far as they commit the bettor: above a two-thirds-pot bet, a cheap
+  // bet keeps most of a standard bet's width.
   if (facingBet && pot > 0) {
     const betRatio = Math.min(2, args.betToPot ?? toCall / pot);
-    fraction -= Math.min(0.18, betRatio * 0.12);
+    const narrowing = Math.min(0.18, betRatio * 0.12);
+    fraction -= narrowing - Math.max(0, narrowing - 0.08) * 0.6 * cheapBetShare(args.commit);
   }
 
   const aggression = args.aggressionCount ?? 1;
