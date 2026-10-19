@@ -1394,8 +1394,21 @@ function decidePostflop(
   const spr =
     potBefore > 0 ? Math.min(ctx.stack, ctx.effectiveStack ?? ctx.stack) / potBefore : 10;
   const valueOpponents = layered ? foldable : opponents;
-  let valueThreshold = Math.min(0.82, 0.55 + Math.max(0, valueOpponents - 1) * 0.07);
-  valueThreshold -= clamp(ctx.recentImage - 0.3, 0, 0.4) * 0.1;
+  const imageLean = clamp(ctx.recentImage - 0.3, 0, 0.4) * 0.1;
+  const valueThreshold =
+    Math.min(0.82, 0.55 + Math.max(0, valueOpponents - 1) * 0.07) - imageLean;
+  // Leading into a field: `eq` is the chance to beat every opponent at once,
+  // and each added opponent cuts it for every hand (top pair about 0.53
+  // three-way, 0.40 four-way, 0.28 against four or more), while its equity
+  // per opponent, eq^(1/n), stays near 0.74. Past three-way the value and
+  // protection bars therefore stay the multiple of the fair share 1/(n+1)
+  // they are three-way instead of rising with the field.
+  const leadValueThreshold =
+    valueOpponents <= 2 ? valueThreshold : 1.86 / (valueOpponents + 1) - imageLean;
+  const protectionThreshold =
+    valueOpponents <= 2
+      ? Math.max(0.4, valueThreshold - 0.16)
+      : 1.38 / (valueOpponents + 1) - imageLean;
   // Share of the chips we can win now that we would take at showdown.
   const showdownShare = () =>
     layered && winnable > 0 ? (eqAll * mainPot + eqLive * sidePot) / winnable : eq;
@@ -1406,7 +1419,7 @@ function decidePostflop(
   // when the estimate sits within the noise band of the nearest threshold.
   if (street !== 'river' || opponents > 1) {
     const probe = facingBet ? showdownShare() : eq;
-    const boundary = facingBet ? directOdds : valueThreshold;
+    const boundary = facingBet ? directOdds : leadValueThreshold;
     const se = Math.sqrt(Math.max(0.01, probe * (1 - probe)) / iterations);
     if (Math.abs(probe - boundary) < 1.6 * se) {
       const second = estimateEquityVsRange({
@@ -1535,13 +1548,13 @@ function decidePostflop(
       features.pairKind === 'over' ||
       features.pairKind === 'top');
   const strongValue =
-    eq >= valueThreshold &&
+    eq >= leadValueThreshold &&
     (features.category >= HandCategory.Pair || street === 'river');
   const protectionValue =
     street !== 'river' &&
     features.category === HandCategory.Pair &&
     (features.pairKind === 'over' || features.pairKind === 'top') &&
-    eq >= Math.max(0.4, valueThreshold - 0.16);
+    eq >= protectionThreshold;
 
   // How far the personality leans into bluffs past the balanced lines below,
   // which are a tight-aggressive regular's: a loose-aggressive player fires
@@ -1569,7 +1582,7 @@ function decidePostflop(
         ]
       : []),
     `n=${equityIterations}`,
-    `vt=${valueThreshold.toFixed(2)}`,
+    `vt=${(facingBet ? valueThreshold : leadValueThreshold).toFixed(2)}`,
     `rq=${rangeFraction.toFixed(2)}`,
     `pfR=${preflopRange.toFixed(2)}`,
     `bq=${features.bluffQuality.toFixed(2)}`,

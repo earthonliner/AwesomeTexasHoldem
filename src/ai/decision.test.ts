@@ -1491,6 +1491,52 @@ describe('multiway post-flop initiative (hard)', () => {
     expect(protectionBets).toBeGreaterThan(10);
     expect(protectionBets).toBeLessThan(70);
   });
+
+  it('leads top pair and two pair into four checked opponents, not only sets', () => {
+    // The pre-flop raiser on the button, checked to by every other player.
+    const leadRate = (holeText: string, opponents: number): number => {
+      let bets = 0;
+      const n = 60;
+      for (let s = 0; s < n; s++) {
+        const d = decide({
+          personality: tag,
+          difficulty: 'hard',
+          ctx: ctx({
+            hole: parseCards(holeText) as [Card, Card],
+            board: dryFlop,
+            street: 'flop',
+            canCheck: true,
+            toCall: 0,
+            potBefore: 12 * (opponents + 1),
+            stack: 194,
+            maxRaiseTo: 194,
+            minRaiseTo: 2,
+            totalCommitted: 6,
+            liveOpponents: opponents,
+            playersBehind: 0,
+            positionFactor: 1,
+            inPositionVsAggressor: true,
+            preflopRaised: true,
+            preflopPotType: 'singleRaised',
+            preflopAggressorPosition: 'btn',
+            wasAggressorLastStreet: true,
+            tableSize: 9,
+          }),
+          rng: seeded(8800 + s),
+          iterations: 150,
+        });
+        if (d.action === 'raise' || d.action === 'allin') bets++;
+      }
+      return bets / n;
+    };
+
+    expect(leadRate('Ks 8d', 4)).toBeGreaterThan(0.9);
+    expect(leadRate('Ks Qd', 4)).toBeGreaterThan(0.8);
+    expect(leadRate('Ks Qd', 3)).toBeGreaterThan(0.8);
+    // Middle pair still checks a field; three-way bars are unchanged.
+    expect(leadRate('9s 8d', 4)).toBeLessThan(0.1);
+    expect(leadRate('9s 8d', 2)).toBeLessThan(0.1);
+  });
 });
 
 describe('cash-game defence vs an early-position open (hard)', () => {
