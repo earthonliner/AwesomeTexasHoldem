@@ -127,6 +127,8 @@ export function ActionBar({ game, onAct }: Props) {
             <span className="w-24 text-right font-mono text-sm text-amber-300">{formatBB(raiseTo)}</span>
           </div>
           <div className="quick-actions flex flex-wrap gap-1.5">
+            <QuickBtn label="1/4 池" onClick={() => setFractionOfPot(0.25)} />
+            <QuickBtn label="1/3 池" onClick={() => setFractionOfPot(1 / 3)} />
             <QuickBtn label="1/2 池" onClick={() => setFractionOfPot(0.5)} />
             <QuickBtn label="3/4 池" onClick={() => setFractionOfPot(0.75)} />
             <QuickBtn label="底池" onClick={() => setFractionOfPot(1)} />
