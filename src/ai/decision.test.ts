@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildDecisionContext } from './context';
 import { actionEV, computeExploit, decide } from './decision';
-import { generatePersonality } from './personality';
+import { describePersonality, generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile, RIVER_FOLD_PRIOR } from './profile';
 import type { AIDecision, DecisionContext, HeroProfile, Personality } from './types';
@@ -2115,5 +2115,67 @@ describe('river bluffs linked to the bet size (hard)', () => {
     const unread = betRate(sample(spot, 9300));
     expect(betRate(sample(spot, 9300, folder))).toBeGreaterThan(unread + 0.1);
     expect(betRate(sample(spot, 9300, station))).toBeLessThan(0.05);
+  });
+});
+
+describe('live cash styles (hard)', () => {
+  const style = (vpip: number, bluff: number): Personality => ({ ...tag, vpip, bluff });
+  const tight = style(0.25, 0.19);
+  const loose = style(0.42, 0.3);
+
+  it('deals tight-aggressive, loose-aggressive and very loose seats', () => {
+    const vpips = Array.from({ length: 200 }, (_, s) => generatePersonality('hard', seeded(s + 500)).vpip);
+    const share = (test: (v: number) => boolean) => vpips.filter(test).length / vpips.length;
+    expect(share((v) => v < 0.285)).toBeGreaterThan(0.25);
+    expect(share((v) => v >= 0.285 && v < 0.36)).toBeGreaterThan(0.3);
+    expect(share((v) => v >= 0.36)).toBeGreaterThan(0.15);
+    expect(describePersonality(loose)).toBe('松凶/LAG');
+    expect(describePersonality(tight)).toBe('紧凶/TAG');
+  });
+
+  it('barrels and bluffs the river more as a loose-aggressive player', () => {
+    const rate = (p: Personality, partial: Partial<DecisionContext>, seed: number) => {
+      let bets = 0;
+      for (let s = 0; s < 60; s++) {
+        const d = decide({
+          personality: p,
+          difficulty: 'hard',
+          ctx: ctx({
+            canCheck: true,
+            toCall: 0,
+            potBefore: 24,
+            stack: 180,
+            maxRaiseTo: 180,
+            minRaiseTo: 2,
+            effectiveStack: 180,
+            totalCommitted: 12,
+            positionFactor: 1,
+            inPositionVsAggressor: true,
+            checkedThisStreet: true,
+            preflopRaised: true,
+            preflopPotType: 'singleRaised',
+            wasAggressorLastStreet: true,
+            ...partial,
+            hole: parseCards('7s 2d') as [Card, Card],
+          }),
+          rng: seeded(seed + s),
+          iterations: 150,
+        });
+        if (d.action === 'raise' || d.action === 'allin') bets++;
+      }
+      return bets / 60;
+    };
+    const turn = { board: parseCards('Kh 9c 4d 6s'), street: 'turn' as const, myBluffsThisHand: 1, bluffedLastStreet: true };
+    expect(rate(loose, turn, 3100)).toBeGreaterThan(rate(tight, turn, 3100) + 0.1);
+    // After a checked-through turn air bets the river far less often than the
+    // aggressor's air does; the loose style still bets it more.
+    const river = {
+      board: parseCards('Kh 9c 4d 6s Jh'),
+      street: 'river' as const,
+      potBefore: 60,
+      wasAggressorLastStreet: false,
+      previousStreetCheckedThrough: true,
+    };
+    expect(rate(loose, river, 3300)).toBeGreaterThan(rate(tight, river, 3300) + 0.1);
   });
 });

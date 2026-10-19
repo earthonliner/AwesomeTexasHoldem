@@ -1494,6 +1494,11 @@ function decidePostflop(
     (features.pairKind === 'over' || features.pairKind === 'top') &&
     eq >= Math.max(0.4, valueThreshold - 0.16);
 
+  // How far the personality leans into bluffs past the balanced lines below,
+  // which are a tight-aggressive regular's: a loose-aggressive player fires
+  // more barrels, floats and river bluffs, and takes some marginal ones the
+  // EV gate leaves to a tighter player.
+  const bluffStyle = clamp(p.bluff / 0.19, 1, 1.5);
   let bluffFrequency = dynamicBluffFrequency(p, ctx) * exploit.bluffMult;
   const candidateMultiplier =
     0.18 + features.bluffQuality * 1.15 - features.showdownValue * 0.28;
@@ -1671,9 +1676,10 @@ function decidePostflop(
           (thinNeed + polarNeed) *
             mix.valuePerAir *
             clamp(exploit.riverFold, 0.4, 1.3) *
-            Math.pow(0.7, opponents - 1),
+            Math.pow(0.7, opponents - 1) *
+            bluffStyle,
           0,
-          0.85,
+          0.9,
         ),
         size: polar ? bluffSize : thinSize,
         isBluff: true,
@@ -1696,9 +1702,10 @@ function decidePostflop(
         chance: clamp(
           (0.34 + (inPosition ? 0.2 : 0) + p.aggression * 0.12) *
             exploit.foldPressure *
-            (0.45 + features.bluffQuality),
+            (0.45 + features.bluffQuality) *
+            bluffStyle,
           0,
-          0.72,
+          0.8,
         ),
         size: bluffSize,
         isBluff: true,
@@ -1736,7 +1743,11 @@ function decidePostflop(
       plan = {
         label: isBluffHand ? 'delayed-probe' : 'delayed-protection',
         checkLabel: 'probe-check',
-        chance: clamp(probeBase * probeQuality * exploit.foldPressure, 0.06, 0.64),
+        chance: clamp(
+          probeBase * probeQuality * exploit.foldPressure * (isBluffHand ? bluffStyle : 1),
+          0.06,
+          0.7,
+        ),
         size: thinSize,
         isBluff: isBluffHand,
         foldEquityBonus: 0.04 + ctx.positionFactor * 0.03,
@@ -1757,9 +1768,10 @@ function decidePostflop(
           ((street === 'river' ? 0.34 : 0.52) +
             (highRunout ? 0.08 : 0) +
             features.bluffQuality * 0.18) *
-            exploit.bluffMult,
+            exploit.bluffMult *
+            bluffStyle,
           0,
-          0.72,
+          0.8,
         ),
         size: bluffSize,
         isBluff: true,
@@ -1808,7 +1820,8 @@ function decidePostflop(
         `fe=${foldEquity.toFixed(2)}`,
         `dEV=${(deltaEV / Math.max(1, potBefore)).toFixed(2)}`,
       );
-      chance *= indifferenceGate(deltaEV);
+      const bluffLean = plan.isBluff ? (bluffStyle - 1) * 0.06 * Math.max(1, potBefore) : 0;
+      chance *= indifferenceGate(deltaEV + bluffLean);
     }
     if (rng() < chance) {
       return mk(sized.allIn ? 'allin' : 'raise', sized.amount, rng, plan.isBluff, [...reason, plan.label]);

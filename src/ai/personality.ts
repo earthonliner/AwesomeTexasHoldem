@@ -9,14 +9,22 @@ function around(rng: Rng, mean: number, spread: number, min = 0, max = 1): numbe
   return Math.min(max, Math.max(min, v));
 }
 
+/** Means of the hard styles (pfr is the share of the played hands raised). */
+export const HARD_STYLES = {
+  tag: { vpip: 0.25, vpipSpread: 0.03, pfr: 0.78, aggression: 0.64, bluff: 0.19, callDown: 0.5 },
+  lag: { vpip: 0.32, vpipSpread: 0.035, pfr: 0.8, aggression: 0.73, bluff: 0.24, callDown: 0.56 },
+  looseLag: { vpip: 0.4, vpipSpread: 0.04, pfr: 0.76, aggression: 0.8, bluff: 0.3, callDown: 0.62 },
+} as const;
+
 /**
  * Generate a personality vector tuned by difficulty.
  *
  * - easy: extreme, readable archetypes (very tight/passive or very loose/wild),
  *   little bluffing and no position awareness.
  * - medium: balanced, believable distributions with situational play.
- * - hard: balanced-aggressive baseline; exploitative adjustments happen later in
- *   the decision layer using the hero profile.
+ * - hard: tight-aggressive, loose-aggressive and very loose-aggressive live
+ *   cash styles; exploitative adjustments happen later in the decision layer
+ *   using the hero profile.
  */
 export function generatePersonality(difficulty: Difficulty, rng: Rng = defaultRng): Personality {
   if (difficulty === 'easy') {
@@ -89,15 +97,20 @@ export function generatePersonality(difficulty: Difficulty, rng: Rng = defaultRn
     };
   }
 
-  // Hard: winning live-reg styles. Skill comes from range/EV/profile logic in
-  // the decision layer, not from simply assigning a higher random bluff rate.
-  const lag = rng() < 0.38;
+  // Hard: the winning styles of a live cash table. Skill comes from the
+  // range/EV/profile logic in the decision layer, which every style shares;
+  // the style decides how many hands it plays and how much it bluffs. About a
+  // third play tight-aggressive, the rest loose-aggressive, a quarter of the
+  // table very loose (opens and barrels a lot, like the live LAG who keeps a
+  // game moving).
+  const roll = rng();
+  const style = roll < 0.35 ? HARD_STYLES.tag : roll < 0.75 ? HARD_STYLES.lag : HARD_STYLES.looseLag;
   return {
-    vpip: around(rng, lag ? 0.33 : 0.24, 0.035),
-    pfr: around(rng, lag ? 0.82 : 0.78, 0.055),
-    aggression: around(rng, lag ? 0.72 : 0.63, 0.07),
-    bluff: around(rng, lag ? 0.22 : 0.17, 0.035),
-    callDown: around(rng, lag ? 0.56 : 0.5, 0.07),
+    vpip: around(rng, style.vpip, style.vpipSpread),
+    pfr: around(rng, style.pfr, 0.055),
+    aggression: around(rng, style.aggression, 0.06),
+    bluff: around(rng, style.bluff, 0.035),
+    callDown: around(rng, style.callDown, 0.07),
     positionAwareness: around(rng, 0.92, 0.05),
     stackReactivity: around(rng, 0.86, 0.07),
     potReactivity: around(rng, 0.84, 0.07),
@@ -108,7 +121,8 @@ const ARCHETYPE_LABELS: Array<{ test: (p: Personality) => boolean; label: string
   { test: (p) => p.vpip < 0.2 && p.aggression < 0.4, label: '岩石/紧弱' },
   { test: (p) => p.vpip > 0.5 && p.aggression < 0.4, label: '跟注站/松弱' },
   { test: (p) => p.vpip > 0.5 && p.aggression > 0.6, label: '疯子/松凶' },
-  { test: (p) => p.vpip < 0.35 && p.aggression > 0.6, label: '紧凶/TAG' },
+  { test: (p) => p.vpip >= 0.3 && p.aggression > 0.6, label: '松凶/LAG' },
+  { test: (p) => p.aggression > 0.6, label: '紧凶/TAG' },
 ];
 
 /** Human-readable archetype guess (used only in dev/debug overlays). */
