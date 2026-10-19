@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildDecisionContext } from './context';
 import { actionEV, computeExploit, decide } from './decision';
-import { generatePersonality } from './personality';
+import { describePersonality, generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
 import { emptyHeroProfile, RIVER_FOLD_PRIOR } from './profile';
 import type { AIDecision, DecisionContext, HeroProfile, Personality } from './types';
@@ -1091,6 +1091,35 @@ describe('hard exploits the observed human style', () => {
     expect(foldRate('6h 6d', turn, 1.2, bettor('smallBets'))).toBeGreaterThan(overbettor + 0.3);
   });
 
+  // A 2x-pot flop bet into a small pot (11 chips, 195 behind) or into a big
+  // one (80 chips, all 160 left): the same price, a different bet.
+  const overbetFold = (hole: string, smallPot: boolean, profile?: HeroProfile) => {
+    const pot = smallPot ? 11 : 80;
+    const stack = smallPot ? 195 : 160;
+    return foldRate(hole, parseCards('Ks 7d 2c'), 2, profile, {
+      potBefore: pot * 3,
+      toCall: pot * 2,
+      currentBet: pot * 2,
+      minRaiseTo: pot * 4,
+      stack,
+      effectiveStack: stack,
+      maxRaiseTo: stack,
+      winnablePot: pot + 2 * Math.min(pot * 2, stack),
+      positionFactor: 0.2,
+    });
+  };
+
+  it('defends a cheap overbet into a small pot wider than one that commits the stack', () => {
+    expect(overbetFold('Ah 7c', true)).toBeLessThan(overbetFold('Ah 7c', false) - 0.15);
+  });
+
+  it('carries an overbettor read only partly into the overbets that put the stack in', () => {
+    const overbettor = bettor('bigBets');
+    expect(overbetFold('8h 8d', true, overbettor)).toBeLessThan(0.15);
+    expect(overbetFold('8h 8d', false, overbettor)).toBeGreaterThan(0.45);
+    expect(overbetFold('8h 8d', false, overbettor)).toBeLessThan(overbetFold('8h 8d', false) - 0.1);
+  });
+
   it('reads a short all-in by the sizes the player bets, not the size it was left with', () => {
     // 24 chips into a 40-chip pot are all it has left: it could not overbet.
     const turn = parseCards('Ks 9c 4d 2h');
@@ -1243,7 +1272,7 @@ describe('hard exploits the observed human style', () => {
     expect(readOn('turn', barrels('turnBigBets')).leadMult).toBeLessThan(0.8);
   });
 
-  it('raises the stabs of a player who folds to raises with any hand', () => {
+  it('raises the stabs of a player who folds to raises', () => {
     const flop = parseCards('Ks 7c 2d');
     const standard = responses('Qh Jd', flop, 0.3).raise;
     const folder = responses('Qh Jd', flop, 0.3, raisedBettor(32)).raise;
@@ -1257,6 +1286,41 @@ describe('hard exploits the observed human style', () => {
     expect(sticky).toBeLessThan(standard - 0.1);
     // Folding to raises at the usual rate adds no light raises.
     expect(responses('Qh Jd', parseCards('Ks 7c 2d'), 0.3, raisedBettor(16)).raise).toBeLessThan(0.2);
+  });
+
+  // 40 of the player's bets were raised: it folded 16 of them and re-raised `reraised`.
+  const reraiser = (reraised: number): HeroProfile => {
+    const profile = raisedBettor(16);
+    return { ...profile, counters: { ...profile.counters, raisesReraised: reraised } };
+  };
+
+  it('reads how often a player re-raises when its bet is raised', () => {
+    const spot = ctx({
+      hole: parseCards('Ah Kd') as [Card, Card],
+      board: parseCards('Ks 7c 2d'),
+      street: 'flop',
+      aggressorIsHero: true,
+    });
+    expect(computeExploit('hard', spot).reraise).toBeCloseTo(0.09);
+    expect(computeExploit('hard', spot, reraiser(16)).reraise).toBeGreaterThan(0.3);
+    expect(computeExploit('hard', spot, reraiser(0)).reraise).toBeLessThan(0.03);
+  });
+
+  it('calls instead of raising one pair into a player who raises back', () => {
+    const turn = parseCards('Ks 7c 2d 4h');
+    const norm = responses('Ah Kd', turn, 0.33, reraiser(4)).raise;
+    const trapper = responses('Ah Kd', turn, 0.33, reraiser(16)).raise;
+    expect(norm).toBeGreaterThan(0.35);
+    expect(trapper).toBeLessThan(0.1);
+    // A set stands the re-raise and keeps raising.
+    expect(responses('7h 7d', turn, 0.33, reraiser(16)).raise).toBeGreaterThan(0.4);
+  });
+
+  it('raises a raise-folder light only with hands that cannot win a showdown', () => {
+    const flop = parseCards('Ks 7c 2d');
+    expect(responses('Qh Jd', flop, 0.3, raisedBettor(32)).raise).toBeGreaterThan(0.2);
+    // Middle pair beats the stabs it would raise off: it calls them.
+    expect(responses('7h 6h', flop, 0.3, raisedBettor(32)).raise).toBeLessThan(0.06);
   });
 });
 
@@ -1426,6 +1490,52 @@ describe('multiway post-flop initiative (hard)', () => {
     }
     expect(protectionBets).toBeGreaterThan(10);
     expect(protectionBets).toBeLessThan(70);
+  });
+
+  it('leads top pair and two pair into four checked opponents, not only sets', () => {
+    // The pre-flop raiser on the button, checked to by every other player.
+    const leadRate = (holeText: string, opponents: number): number => {
+      let bets = 0;
+      const n = 60;
+      for (let s = 0; s < n; s++) {
+        const d = decide({
+          personality: tag,
+          difficulty: 'hard',
+          ctx: ctx({
+            hole: parseCards(holeText) as [Card, Card],
+            board: dryFlop,
+            street: 'flop',
+            canCheck: true,
+            toCall: 0,
+            potBefore: 12 * (opponents + 1),
+            stack: 194,
+            maxRaiseTo: 194,
+            minRaiseTo: 2,
+            totalCommitted: 6,
+            liveOpponents: opponents,
+            playersBehind: 0,
+            positionFactor: 1,
+            inPositionVsAggressor: true,
+            preflopRaised: true,
+            preflopPotType: 'singleRaised',
+            preflopAggressorPosition: 'btn',
+            wasAggressorLastStreet: true,
+            tableSize: 9,
+          }),
+          rng: seeded(8800 + s),
+          iterations: 150,
+        });
+        if (d.action === 'raise' || d.action === 'allin') bets++;
+      }
+      return bets / n;
+    };
+
+    expect(leadRate('Ks 8d', 4)).toBeGreaterThan(0.9);
+    expect(leadRate('Ks Qd', 4)).toBeGreaterThan(0.8);
+    expect(leadRate('Ks Qd', 3)).toBeGreaterThan(0.8);
+    // Middle pair still checks a field; three-way bars are unchanged.
+    expect(leadRate('9s 8d', 4)).toBeLessThan(0.1);
+    expect(leadRate('9s 8d', 2)).toBeLessThan(0.1);
   });
 });
 
@@ -2051,5 +2161,174 @@ describe('river bluffs linked to the bet size (hard)', () => {
     const unread = betRate(sample(spot, 9300));
     expect(betRate(sample(spot, 9300, folder))).toBeGreaterThan(unread + 0.1);
     expect(betRate(sample(spot, 9300, station))).toBeLessThan(0.05);
+  });
+});
+
+describe('live cash styles (hard)', () => {
+  const style = (vpip: number, bluff: number): Personality => ({ ...tag, vpip, bluff });
+  const tight = style(0.25, 0.19);
+  const loose = style(0.42, 0.3);
+
+  // 6-max (or 9-max), button on the last seat, 100bb; the actions are taken
+  // in turn from the first player to act pre-flop.
+  const table = (seatCount: number, ...actions: [ActionType, number?][]) => {
+    const seats: SeatInit[] = Array.from({ length: seatCount }, (_, i) => ({
+      id: i,
+      name: `P${i}`,
+      isHero: false,
+      stack: 100 * BB_CHIPS,
+    }));
+    const config = { seatCount, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' } as const;
+    return actions.reduce(
+      (g, [type, amount = 0]) => applyAction(g, { type, amount }),
+      startHand(config, seats, seatCount - 1, 1, () => 0.42),
+    );
+  };
+  const spot = (...actions: [ActionType, number?][]) => {
+    const game = table(6, ...actions);
+    return buildDecisionContext(game, game.toAct);
+  };
+  const act = (p: Personality, c: DecisionContext, hole: string, seed = 1) =>
+    decide({
+      personality: p,
+      difficulty: 'hard',
+      ctx: { ...c, hole: parseCards(hole) as [Card, Card] },
+      rng: seeded(seed),
+    });
+  // Share of all 1326 starting hands the player raises first in.
+  const openShare = (p: Personality, c: DecisionContext) => {
+    const deck = makeDeck();
+    let opens = 0;
+    let combos = 0;
+    for (let i = 0; i < deck.length; i++) {
+      for (let j = i + 1; j < deck.length; j++) {
+        const d = decide({
+          personality: p,
+          difficulty: 'hard',
+          ctx: { ...c, hole: [deck[i], deck[j]] },
+          rng: seeded(i * 52 + j),
+        });
+        combos++;
+        if (d.action === 'raise' || d.action === 'allin') opens++;
+      }
+    }
+    return opens / combos;
+  };
+
+  it('deals tight-aggressive, loose-aggressive and very loose seats', () => {
+    const vpips = Array.from({ length: 200 }, (_, s) => generatePersonality('hard', seeded(s + 500)).vpip);
+    const share = (test: (v: number) => boolean) => vpips.filter(test).length / vpips.length;
+    expect(share((v) => v < 0.285)).toBeGreaterThan(0.25);
+    expect(share((v) => v >= 0.285 && v < 0.36)).toBeGreaterThan(0.3);
+    expect(share((v) => v >= 0.36)).toBeGreaterThan(0.15);
+    expect(describePersonality(loose)).toBe('松凶/LAG');
+    expect(describePersonality(tight)).toBe('紧凶/TAG');
+  });
+
+  it('opens a loose style its extra hands in late position, not under the gun', () => {
+    const utg = spot();
+    const button = spot(['fold'], ['fold'], ['fold']);
+    expect(openShare(loose, utg)).toBeLessThan(0.28);
+    expect(openShare(loose, button)).toBeGreaterThan(0.65);
+    expect(openShare(tight, button)).toBeLessThan(0.5);
+  });
+
+  it('completes a band of small-blind hands below its raising range when folded to', () => {
+    const sb = spot(['fold'], ['fold'], ['fold'], ['fold']);
+    const actions = (hole: string) =>
+      Array.from({ length: 12 }, (_, s) => act(tight, sb, hole, s + 40).action);
+    expect(actions('Ah 2d').every((a) => a === 'call')).toBe(true);
+    expect(actions('Jh 8d').every((a) => a === 'call')).toBe(true);
+    expect(actions('7d 2c').every((a) => a === 'fold')).toBe(true);
+  });
+
+  it('defends the top of its completing band against a raise from the big blind', () => {
+    const raised = spot(['fold'], ['fold'], ['fold'], ['fold'], ['call'], ['raise', 4 * BB_CHIPS]);
+    expect(raised.toCall).toBe(3 * BB_CHIPS);
+    const actions = (hole: string) =>
+      Array.from({ length: 12 }, (_, s) => act(tight, raised, hole, s + 60).action);
+    expect(actions('Ah 3d').every((a) => a === 'call')).toBe(true);
+    expect(actions('Jh 8d').every((a) => a === 'fold')).toBe(true);
+  });
+
+  it('rarely hands the big blind a walk', () => {
+    const walkRate = (seatCount: number, hands: number) => {
+      let walks = 0;
+      for (let h = 0; h < hands; h++) {
+        const players = Array.from({ length: seatCount }, (_, i) =>
+          generatePersonality('hard', seeded(h * 31 + i + 7)),
+        );
+        let game = startHand(
+          { seatCount, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' },
+          Array.from({ length: seatCount }, (_, i) => ({ id: i, name: `P${i}`, isHero: false, stack: 100 * BB_CHIPS })),
+          h % seatCount,
+          h + 1,
+          seeded(h + 11),
+        );
+        let walk = false;
+        while (game.status === 'betting' && game.street === 'preflop') {
+          const idx = game.toAct;
+          const d = decide({
+            personality: players[idx],
+            difficulty: 'hard',
+            ctx: buildDecisionContext(game, idx),
+            rng: seeded(h * 977 + idx),
+          });
+          if (d.action !== 'fold') break;
+          game = applyAction(game, { type: 'fold', amount: 0 });
+          walk = game.status !== 'betting';
+        }
+        if (walk) walks++;
+      }
+      return walks / hands;
+    };
+    expect(walkRate(6, 600)).toBeLessThan(0.08);
+    expect(walkRate(9, 400)).toBeLessThan(0.05);
+  });
+
+  it('barrels and bluffs the river more as a loose-aggressive player', () => {
+    const rate = (p: Personality, partial: Partial<DecisionContext>, seed: number) => {
+      let bets = 0;
+      for (let s = 0; s < 60; s++) {
+        const d = decide({
+          personality: p,
+          difficulty: 'hard',
+          ctx: ctx({
+            canCheck: true,
+            toCall: 0,
+            potBefore: 24,
+            stack: 180,
+            maxRaiseTo: 180,
+            minRaiseTo: 2,
+            effectiveStack: 180,
+            totalCommitted: 12,
+            positionFactor: 1,
+            inPositionVsAggressor: true,
+            checkedThisStreet: true,
+            preflopRaised: true,
+            preflopPotType: 'singleRaised',
+            wasAggressorLastStreet: true,
+            ...partial,
+            hole: parseCards('7s 2d') as [Card, Card],
+          }),
+          rng: seeded(seed + s),
+          iterations: 150,
+        });
+        if (d.action === 'raise' || d.action === 'allin') bets++;
+      }
+      return bets / 60;
+    };
+    const turn = { board: parseCards('Kh 9c 4d 6s'), street: 'turn' as const, myBluffsThisHand: 1, bluffedLastStreet: true };
+    expect(rate(loose, turn, 3100)).toBeGreaterThan(rate(tight, turn, 3100) + 0.1);
+    // After a checked-through turn air bets the river far less often than the
+    // aggressor's air does; the loose style still bets it more.
+    const river = {
+      board: parseCards('Kh 9c 4d 6s Jh'),
+      street: 'river' as const,
+      potBefore: 60,
+      wasAggressorLastStreet: false,
+      previousStreetCheckedThrough: true,
+    };
+    expect(rate(loose, river, 3300)).toBeGreaterThan(rate(tight, river, 3300) + 0.1);
   });
 });

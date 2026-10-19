@@ -260,11 +260,28 @@ describe('updateHeroProfile — new exploit dimensions', () => {
     } as unknown as GameState;
 
     const summary = summarizePlayerHand(game, 0);
-    expect(summary.raisedAfterBetting).toEqual({ faced: 2, folded: 1 });
+    expect(summary.raisedAfterBetting).toEqual({ faced: 2, folded: 1, reraised: 0 });
     // The villain's flop check-raise was never raised back; its river lead was, and it re-raised.
-    expect(summarizePlayerHand(game, 1).raisedAfterBetting).toEqual({ faced: 1, folded: 0 });
+    expect(summarizePlayerHand(game, 1).raisedAfterBetting).toEqual({ faced: 1, folded: 0, reraised: 1 });
     const p = updateHeroProfile(emptyHeroProfile(), summary);
     expect(p.counters.raisesFaced).toBe(2);
     expect(p.counters.raisesFolded).toBe(1);
+    expect(p.counters.raisesReraised).toBe(0);
+    const villain = updateHeroProfile(emptyHeroProfile(), summarizePlayerHand(game, 1));
+    expect(villain.counters.raisesReraised).toBe(1);
+  });
+
+  it('reads a profile saved before re-raises were counted', () => {
+    const legacy = emptyHeroProfile();
+    delete (legacy.counters as Partial<typeof legacy.counters>).raisesReraised;
+    const summary = {
+      heroId: 0,
+      actions: [],
+      facedSteal: false,
+      heroFoldedToSteal: false,
+      heroReachedShowdown: false,
+      raisedAfterBetting: { faced: 1, folded: 0, reraised: 1 },
+    };
+    expect(updateHeroProfile(legacy, summary).counters.raisesReraised).toBe(1);
   });
 });

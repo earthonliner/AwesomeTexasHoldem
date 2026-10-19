@@ -72,6 +72,7 @@ export function emptyHeroProfile(): HeroProfile {
       continuationBets: 0,
       raisesFaced: 0,
       raisesFolded: 0,
+      raisesReraised: 0,
       riverBetsFaced: 0,
       riverBetFolds: 0,
       ...emptyStreetCounters(),
@@ -112,8 +113,8 @@ export interface HandSummary {
    * previous street (continuation bets: c-bets and barrels).
    */
   openingBets?: Record<PostflopStreet, StreetOpeningBets>;
-  /** Post-flop streets where the hero's bet or raise was raised, and how often it folded. */
-  raisedAfterBetting?: { faced: number; folded: number };
+  /** Post-flop streets where the hero's bet or raise was raised, and how often it folded or re-raised. */
+  raisedAfterBetting?: { faced: number; folded: number; reraised?: number };
   /** The hero faced the opening bet of the river (not a raise of its own bet). */
   riverBetFaced?: { folded: boolean } | null;
 }
@@ -265,7 +266,7 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     if (response) riverBetFaced = { folded: response.type === 'fold' };
   }
 
-  const raisedAfterBetting = { faced: 0, folded: 0 };
+  const raisedAfterBetting = { faced: 0, folded: 0, reraised: 0 };
   for (let s = 1; s < streets.length; s++) {
     const onStreet = actions.filter((a) => a.street === streets[s]);
     const betIndex = onStreet.findIndex((a) => a.playerId === playerId && AGGRESSIVE.has(a.type));
@@ -278,6 +279,7 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     if (!response || response.toCall <= 0) continue;
     raisedAfterBetting.faced += 1;
     if (response.type === 'fold') raisedAfterBetting.folded += 1;
+    else if (AGGRESSIVE.has(response.type)) raisedAfterBetting.reraised += 1;
   }
 
   return {
@@ -366,6 +368,7 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
   if (summary.raisedAfterBetting) {
     c.raisesFaced += summary.raisedAfterBetting.faced;
     c.raisesFolded += summary.raisedAfterBetting.folded;
+    c.raisesReraised = (c.raisesReraised ?? 0) + (summary.raisedAfterBetting.reraised ?? 0);
   }
   if (summary.riverBetFaced) {
     c.riverBetsFaced += 1;

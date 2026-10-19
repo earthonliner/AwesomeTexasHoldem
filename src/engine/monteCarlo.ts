@@ -206,6 +206,12 @@ export interface RangeEquityOptions {
   /** That many of the capped callers called or bet all-in on this street. */
   allInCallers?: number;
   /**
+   * Share (0..1) of the value range, from its top, that the bettor does not
+   * hold in this sample: the hands that would have re-raised instead, when
+   * only the ones that just call are wanted.
+   */
+  valueSkip?: number;
+  /**
    * Pre-flop combinations still plausible after the observed pre-flop line.
    * A 3-bet pot can pass ~0.12, while a limped pot can pass ~0.7.
    */
@@ -457,6 +463,11 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
   const wanted = Math.round(rangeFraction * combos.length);
   const valueCount = Math.min(combos.length, Math.max(floor, wanted));
   const valuePool = combos.slice(0, valueCount).map((c) => c.cards);
+  const skipped = Math.min(
+    Math.max(0, valueCount - floor),
+    Math.round(valueCount * Math.min(0.9, Math.max(0, opts.valueSkip ?? 0))),
+  );
+  const bettorPool = skipped > 0 ? valuePool.slice(skipped) : valuePool;
 
   // Bluff range: draws on flop/turn and blocker-rich low-showdown hands on the
   // river, rather than blindly taking the absolute bottom of the deck.
@@ -555,7 +566,7 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
                 { pool: checkedPool, weight: 1 - trapWeight },
               ]
             : [
-                { pool: valuePool, weight: 1 - bluffShare },
+                { pool: bettorPool, weight: 1 - bluffShare },
                 { pool: bluffPool, weight: bluffPool.length > 0 ? bluffShare : 0 },
               ];
     const exact = exactRiverHeadsUp(heroCards, board, pools);
@@ -639,7 +650,7 @@ export function estimateEquityVsRange(opts: RangeEquityOptions): RangeEquityResu
       }
       const useBluff = bluffShare > 0 && bluffPool.length > 0 && rng() < bluffShare;
       oppHands.push(
-        useBluff ? drawFrom(bluffPool, usedIds, 'bottom') : drawFrom(valuePool, usedIds, 'top'),
+        useBluff ? drawFrom(bluffPool, usedIds, 'bottom') : drawFrom(bettorPool, usedIds, 'top'),
       );
     }
 
@@ -698,15 +709,32 @@ export function estimateBluffShare(args: {
   betToPot?: number;
   aggressionCount?: number;
   street?: 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
+  /** Share of the effective stack the bet asks for (see `cheapBetShare`). */
+  commit?: number;
 }): number {
   if (!args.facingBet) return 0;
   let base = 0.3 + args.wetness * 0.1;
-  // Large river bets are naturally more polar; repeated raises are value-heavy.
-  if ((args.betToPot ?? 0) >= 0.8) base += 0.05;
+  // Large bets are naturally more polar, and a large bet that risks little of
+  // the stack is the cheapest bluff there is; repeated raises are value-heavy.
+  if ((args.betToPot ?? 0) >= 0.8) base += 0.05 + 0.05 * cheapBetShare(args.commit);
   if (args.street === 'river') base += 0.02;
   if ((args.aggressionCount ?? 1) >= 2) base *= 0.7;
+  if ((args.aggressionCount ?? 1) >= 3) base *= 0.7;
   const multiwayDamp = Math.sqrt(Math.max(1, args.liveOpponents));
   return Math.min(0.5, Math.max(0.08, base / multiwayDamp));
+}
+
+/**
+ * How cheap a bet is in stack terms, from 1 (it asks for a tenth of the
+ * effective stack or less) to 0 (a third or more). Pot odds depend on the size
+ * relative to the pot alone, but a pot-sized or bigger bet into a small pot
+ * commits nothing: it is a cheap way to bluff or to build a pot with a merely
+ * good hand, while the same size into a big pot puts the stack in and comes
+ * from a polar, value-heavy range.
+ */
+export function cheapBetShare(commit: number | undefined): number {
+  if (commit === undefined) return 0;
+  return Math.min(1, Math.max(0, (0.35 - commit) / 0.25));
 }
 
 /**
@@ -722,17 +750,26 @@ export function estimateRangeFraction(args: {
   betToPot?: number;
   aggressionCount?: number;
   preflopPotType?: 'unopened' | 'limped' | 'singleRaised' | 'threeBet' | 'fourBetPlus';
+  /** Share of the effective stack the bet asks for (see `cheapBetShare`). */
+  commit?: number;
 }): number {
   const { street, facingBet, toCall, pot } = args;
   let fraction = facingBet ? 0.38 : 0.62;
 
-  // Bigger bets relative to the pot represent stronger, more polarized ranges.
+  // Bigger bets relative to the pot represent stronger, more polarized ranges,
+  // as far as they commit the bettor: above a two-thirds-pot bet, a cheap
+  // bet keeps most of a standard bet's width.
   if (facingBet && pot > 0) {
     const betRatio = Math.min(2, args.betToPot ?? toCall / pot);
-    fraction -= Math.min(0.18, betRatio * 0.12);
+    const narrowing = Math.min(0.18, betRatio * 0.12);
+    fraction -= narrowing - Math.max(0, narrowing - 0.08) * 0.6 * cheapBetShare(args.commit);
   }
 
-  if ((args.aggressionCount ?? 1) >= 2) fraction *= 0.72;
+  const aggression = args.aggressionCount ?? 1;
+  if (aggression >= 2) fraction *= 0.72;
+  // A re-raise is the third bet of the street: sets, two pair and a few
+  // draws, far narrower than the raise it answers.
+  if (aggression >= 3) fraction *= 0.6;
   if (args.preflopPotType === 'threeBet') fraction *= 0.82;
   if (args.preflopPotType === 'fourBetPlus') fraction *= 0.65;
   if (args.preflopPotType === 'limped') fraction *= 1.18;
@@ -741,5 +778,5 @@ export function estimateRangeFraction(args: {
   if (street === 'turn') fraction -= 0.04;
   if (street === 'river') fraction -= 0.08;
 
-  return Math.min(0.85, Math.max(0.12, fraction));
+  return Math.min(0.85, Math.max(aggression >= 3 ? 0.06 : 0.12, fraction));
 }

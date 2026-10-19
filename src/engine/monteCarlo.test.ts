@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { estimateEquity, estimateEquityVsRange, estimateRangeFraction, estimateBluffShare } from './monteCarlo';
+import {
+  cheapBetShare,
+  estimateEquity,
+  estimateEquityVsRange,
+  estimateRangeFraction,
+  estimateBluffShare,
+} from './monteCarlo';
 import { parseCards } from './deck';
 import type { Card } from './types';
 
@@ -266,5 +272,55 @@ describe('estimateEquityVsRange (board-aware opponent range)', () => {
     const bigBet = estimateRangeFraction({ street: 'river', facingBet: true, toCall: 30, pot: 20 });
     expect(smallBet).toBeLessThan(noBet);
     expect(bigBet).toBeLessThan(smallBet);
+  });
+
+  it('reads a re-raise far narrower than the raise it answers', () => {
+    const spot = { street: 'turn' as const, facingBet: true, toCall: 40, pot: 60, betToPot: 1 };
+    const raise = estimateRangeFraction({ ...spot, aggressionCount: 2 });
+    const reraise = estimateRangeFraction({ ...spot, aggressionCount: 3 });
+    expect(reraise).toBeLessThan(raise * 0.7);
+    const bluffs = (aggressionCount: number) =>
+      estimateBluffShare({ facingBet: true, liveOpponents: 1, wetness: 0.3, betToPot: 1, aggressionCount });
+    expect(bluffs(3)).toBeLessThan(bluffs(2));
+  });
+
+  it('rates a bet as cheap by the share of the effective stack it asks for', () => {
+    expect(cheapBetShare(undefined)).toBe(0);
+    expect(cheapBetShare(0.05)).toBe(1);
+    expect(cheapBetShare(0.1)).toBeCloseTo(1);
+    expect(cheapBetShare(0.225)).toBeCloseTo(0.5);
+    expect(cheapBetShare(0.35)).toBe(0);
+    expect(cheapBetShare(1)).toBe(0);
+  });
+
+  it('reads a cheap overbet wider and more bluff-heavy than one that commits the stack', () => {
+    // 2x pot into 5.5bb with 97bb behind, against 2x pot into 40bb with 80bb behind.
+    const spot = { street: 'flop' as const, facingBet: true, toCall: 22, pot: 33, betToPot: 2 };
+    const cheap = estimateRangeFraction({ ...spot, commit: 0.11 });
+    const committed = estimateRangeFraction({ ...spot, commit: 1 });
+    expect(cheap).toBeGreaterThan(committed + 0.05);
+    expect(committed).toBeCloseTo(estimateRangeFraction(spot));
+    // Up to two-thirds pot a bet is read the same however deep the stacks are.
+    const standard = { ...spot, toCall: 8, betToPot: 0.66 };
+    expect(estimateRangeFraction({ ...standard, commit: 0.04 })).toBeCloseTo(
+      estimateRangeFraction({ ...standard, commit: 1 }),
+    );
+
+    const bluffs = { facingBet: true, liveOpponents: 1, wetness: 0.3, betToPot: 2, street: 'flop' as const };
+    expect(estimateBluffShare({ ...bluffs, commit: 0.11 })).toBeGreaterThan(
+      estimateBluffShare({ ...bluffs, commit: 1 }) + 0.04,
+    );
+    expect(estimateBluffShare({ ...bluffs, commit: 1 })).toBeCloseTo(estimateBluffShare(bluffs));
+  });
+
+  it('leaves the strongest share of the value range out with valueSkip', () => {
+    // Top pair against the value range of a bettor: without its sets and two
+    // pair (the hands that would re-raise) the same range is much weaker.
+    const heroCards = hero('Ah Kd');
+    const board = parseCards('Ks 7c 2d 4h');
+    const opts = { heroCards, board, opponents: 1, iterations: 3000, rangeFraction: 0.25 };
+    const all = estimateEquityVsRange({ ...opts, rng: seeded(61) });
+    const callers = estimateEquityVsRange({ ...opts, rng: seeded(61), valueSkip: 0.3 });
+    expect(callers.equity).toBeGreaterThan(all.equity + 0.1);
   });
 });
