@@ -191,11 +191,16 @@ export interface HeroProfile {
   aggression: number;
   /** Share of the hero's shown-down river bets that were weak (bluff proxy). */
   bluffCaught: number;
+  /** Share of the flops the hero sees that it takes to showdown. */
   wentToShowdown: number;
   /** How often the hero folds to a flop continuation bet. */
   foldToCbet: number;
   /** How often the hero folds to the opening bet of a river. */
   foldToRiverBet: number;
+  /** How often the hero re-raises a single pre-flop raise in front of it. */
+  threeBet: number;
+  /** How often the hero folds its pre-flop raise to a re-raise. */
+  foldToThreeBet: number;
   /** Raw counters used to derive the smoothed rates above. */
   counters: {
     handsDealt: number;
@@ -235,5 +240,14 @@ export interface HeroProfile {
     /** Rivers where the hero faced the opening bet, and the folds to it. */
     riverBetsFaced: number;
     riverBetFolds: number;
+    /** Flops the hero saw, and the showdowns it reached from them. */
+    flopsSeen: number;
+    flopShowdowns: number;
+    /** Single pre-flop raises the hero first acted on (not its own), and its re-raises of them. */
+    threeBetChances: number;
+    threeBets: number;
+    /** Pre-flop raises of the hero that were re-raised, and its folds to the re-raise. */
+    threeBetsFaced: number;
+    threeBetFolds: number;
   } & Record<`${PostflopStreet}${StreetBetCounter}`, number>;
 }

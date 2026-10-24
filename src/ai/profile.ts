@@ -27,6 +27,15 @@ export function streetCounterKey(street: PostflopStreet, counter: StreetBetCount
  * population rate (6-max, 100bb), so an unread player reads as the norm.
  */
 export const RIVER_FOLD_PRIOR = 0.42;
+/**
+ * Hard-AI population rates (6-max, 100bb) the pre-flop and showdown reads
+ * start from: 3-bets per chance, folds to a 3-bet after opening, showdowns
+ * per flop seen, and called river bets shown down with no pair (air).
+ */
+export const THREE_BET_PRIOR = 0.065;
+export const FOLD_TO_THREE_BET_PRIOR = 0.52;
+export const SHOWDOWN_PRIOR = 0.27;
+export const SHOWN_WEAK_PRIOR = 0.08;
 
 function emptyStreetCounters(): Record<StreetCounterKey, number> {
   const out = {} as Record<StreetCounterKey, number>;
@@ -43,10 +52,12 @@ export function emptyHeroProfile(): HeroProfile {
     pfr: 0.15,
     foldToSteal: 0.5,
     aggression: 0.5,
-    bluffCaught: 0.3,
-    wentToShowdown: 0.3,
+    bluffCaught: SHOWN_WEAK_PRIOR,
+    wentToShowdown: SHOWDOWN_PRIOR,
     foldToCbet: 0.5,
     foldToRiverBet: RIVER_FOLD_PRIOR,
+    threeBet: THREE_BET_PRIOR,
+    foldToThreeBet: FOLD_TO_THREE_BET_PRIOR,
     counters: {
       handsDealt: 0,
       voluntaryActions: 0,
@@ -75,6 +86,12 @@ export function emptyHeroProfile(): HeroProfile {
       raisesReraised: 0,
       riverBetsFaced: 0,
       riverBetFolds: 0,
+      flopsSeen: 0,
+      flopShowdowns: 0,
+      threeBetChances: 0,
+      threeBets: 0,
+      threeBetsFaced: 0,
+      threeBetFolds: 0,
       ...emptyStreetCounters(),
     },
   };
@@ -117,6 +134,12 @@ export interface HandSummary {
   raisedAfterBetting?: { faced: number; folded: number; reraised?: number };
   /** The hero faced the opening bet of the river (not a raise of its own bet). */
   riverBetFaced?: { folded: boolean } | null;
+  /** The hero was still in the hand when the flop came. */
+  sawFlop?: boolean;
+  /** The hero's first action faced a single raise by another player: whether it re-raised. */
+  threeBet?: { made: boolean } | null;
+  /** The hero's pre-flop raise was re-raised: whether it folded. */
+  facedThreeBet?: { folded: boolean } | null;
 }
 
 const AGGRESSIVE = new Set(['bet', 'raise', 'allin']);
@@ -282,6 +305,29 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     else if (AGGRESSIVE.has(response.type)) raisedAfterBetting.reraised += 1;
   }
 
+  const player = game.players.find((p) => p.id === playerId);
+  const sawFlop =
+    game.board.length >= 3 &&
+    player?.hole.length === 2 &&
+    !preflop.some((a) => a.playerId === playerId && a.type === 'fold');
+
+  let threeBet: HandSummary['threeBet'] = null;
+  let facedThreeBet: HandSummary['facedThreeBet'] = null;
+  let raises = 0;
+  let opener = -1;
+  let acted = false;
+  for (const a of preflop) {
+    if (a.playerId === playerId) {
+      if (!acted && raises === 1 && opener !== playerId) threeBet = { made: AGGRESSIVE.has(a.type) };
+      if (raises === 2 && opener === playerId && !facedThreeBet) facedThreeBet = { folded: a.type === 'fold' };
+      acted = true;
+    }
+    if (AGGRESSIVE.has(a.type)) {
+      raises += 1;
+      if (raises === 1) opener = a.playerId;
+    }
+  }
+
   return {
     heroId: playerId,
     actions,
@@ -294,6 +340,9 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
     openingBets,
     raisedAfterBetting,
     riverBetFaced,
+    sawFlop,
+    threeBet,
+    facedThreeBet,
   };
 }
 
@@ -302,7 +351,8 @@ export function summarizePlayerHand(game: GameState, playerId: number): HandSumm
  * Bayesian priors, so one rare opportunity cannot create a 0%/100% read.
  */
 export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): HeroProfile {
-  const c = { ...profile.counters };
+  // Profiles saved before a counter existed start it from zero.
+  const c = { ...emptyHeroProfile().counters, ...profile.counters };
   c.handsDealt += 1;
 
   let voluntary = false;
@@ -368,11 +418,23 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
   if (summary.raisedAfterBetting) {
     c.raisesFaced += summary.raisedAfterBetting.faced;
     c.raisesFolded += summary.raisedAfterBetting.folded;
-    c.raisesReraised = (c.raisesReraised ?? 0) + (summary.raisedAfterBetting.reraised ?? 0);
+    c.raisesReraised += summary.raisedAfterBetting.reraised ?? 0;
   }
   if (summary.riverBetFaced) {
     c.riverBetsFaced += 1;
     if (summary.riverBetFaced.folded) c.riverBetFolds += 1;
+  }
+  if (summary.sawFlop) {
+    c.flopsSeen += 1;
+    if (summary.heroReachedShowdown) c.flopShowdowns += 1;
+  }
+  if (summary.threeBet) {
+    c.threeBetChances += 1;
+    if (summary.threeBet.made) c.threeBets += 1;
+  }
+  if (summary.facedThreeBet) {
+    c.threeBetsFaced += 1;
+    if (summary.facedThreeBet.folded) c.threeBetFolds += 1;
   }
 
   const ratio = (num: number, den: number, prior: number, priorWeight: number) =>
@@ -384,10 +446,12 @@ export function updateHeroProfile(profile: HeroProfile, summary: HandSummary): H
     pfr: ratio(c.preflopRaises, c.handsDealt, 0.18, 8),
     foldToSteal: ratio(c.stealFacedFolds, c.stealFaced, 0.5, 5),
     aggression: ratio(c.aggressiveActions, c.aggressiveActions + c.passiveActions, 0.5, 10),
-    bluffCaught: ratio(c.riverBetsWeak, c.riverBetsShown, 0.3, 5),
-    wentToShowdown: ratio(c.showdowns, c.handsDealt, 0.3, 8),
+    bluffCaught: ratio(c.riverBetsWeak, c.riverBetsShown, SHOWN_WEAK_PRIOR, 6),
+    wentToShowdown: ratio(c.flopShowdowns, c.flopsSeen, SHOWDOWN_PRIOR, 10),
     foldToCbet: ratio(c.cbetFolded, c.cbetFaced, 0.5, 5),
     foldToRiverBet: ratio(c.riverBetFolds, c.riverBetsFaced, RIVER_FOLD_PRIOR, 8),
+    threeBet: ratio(c.threeBets, c.threeBetChances, THREE_BET_PRIOR, 10),
+    foldToThreeBet: ratio(c.threeBetFolds, c.threeBetsFaced, FOLD_TO_THREE_BET_PRIOR, 8),
     counters: c,
   };
 }

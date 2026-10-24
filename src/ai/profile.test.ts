@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   emptyHeroProfile,
   RIVER_FOLD_PRIOR,
+  SHOWDOWN_PRIOR,
+  SHOWN_WEAK_PRIOR,
   summarizePlayerHand,
+  THREE_BET_PRIOR,
   updateHeroProfile,
   type HandSummary,
 } from './profile';
@@ -43,7 +46,7 @@ describe('updateHeroProfile — new exploit dimensions', () => {
     expect(p.counters.riverBigWeak).toBe(1);
     expect(p.counters.riverSmallShown).toBe(1);
     expect(p.counters.riverSmallWeak).toBe(0);
-    expect(p.bluffCaught).toBeCloseTo(0.3125, 5);
+    expect(p.bluffCaught).toBeCloseTo((1 + SHOWN_WEAK_PRIOR * 6) / 9, 5);
   });
 
   it('does not label a losing river value bet as a bluff', () => {
@@ -283,5 +286,73 @@ describe('updateHeroProfile — new exploit dimensions', () => {
       raisedAfterBetting: { faced: 1, folded: 0, reraised: 1 },
     };
     expect(updateHeroProfile(legacy, summary).counters.raisesReraised).toBe(1);
+  });
+
+  it('starts counters a saved profile lacks from zero', () => {
+    const legacy = emptyHeroProfile();
+    const counters = legacy.counters as Partial<typeof legacy.counters>;
+    delete counters.flopsSeen;
+    delete counters.threeBetChances;
+    const p = updateHeroProfile(legacy, baseSummary({ sawFlop: true, threeBet: { made: true } }));
+    expect(p.counters.flopsSeen).toBe(1);
+    expect(p.counters.threeBetChances).toBe(1);
+    expect(p.threeBet).toBeGreaterThan(THREE_BET_PRIOR);
+  });
+});
+
+describe('pre-flop 3-bet reads and showdowns per flop', () => {
+  const config: GameConfig = { seatCount: 6, blindLevel: 1, startingStackBB: 100, difficulty: 'hard' };
+  const seats: SeatInit[] = Array.from({ length: 6 }, (_, id) => ({
+    id,
+    name: `P${id}`,
+    isHero: id === 4,
+    stack: 200,
+  }));
+  // Button on seat 0: seat 3 opens first (UTG), seat 4 is the hijack.
+  const play = (moves: Array<[GameState['history'][number]['type'], number?]>, hand: number) => {
+    let game = startHand(config, seats, 0, hand, () => 0.42);
+    for (const [type, amount = 0] of moves) game = applyAction(game, { type, amount });
+    return game;
+  };
+  const foldRest = (n: number): Array<[GameState['history'][number]['type']]> =>
+    Array.from({ length: n }, () => ['fold']);
+
+  it('counts a re-raise of a single open as a 3-bet and the opener folding to it', () => {
+    const game = play([['raise', 6], ['raise', 18], ...foldRest(5)], 1);
+    expect(summarizePlayerHand(game, 4).threeBet).toEqual({ made: true });
+    expect(summarizePlayerHand(game, 4).facedThreeBet).toBeNull();
+    expect(summarizePlayerHand(game, 3).threeBet).toBeNull();
+    expect(summarizePlayerHand(game, 3).facedThreeBet).toEqual({ folded: true });
+    // Players behind faced the 3-bet itself, not a single raise.
+    expect(summarizePlayerHand(game, 5).threeBet).toBeNull();
+    expect(summarizePlayerHand(game, 4).sawFlop).toBe(false);
+  });
+
+  it('counts a flat call as a 3-bet chance not taken and the showdown per flop seen', () => {
+    const preflop: Array<[GameState['history'][number]['type'], number?]> = [
+      ['raise', 6],
+      ['call'],
+      ...foldRest(4),
+    ];
+    const checkDown = Array.from({ length: 6 }, () => ['check'] as [GameState['history'][number]['type']]);
+    const shown = play([...preflop, ...checkDown], 2);
+    expect(shown.street).toBe('showdown');
+    const summary = summarizePlayerHand(shown, 4);
+    expect(summary.threeBet).toEqual({ made: false });
+    expect(summary.sawFlop).toBe(true);
+
+    const foldedFlop = play([...preflop, ['bet', 4], ['fold']], 3);
+    expect(summarizePlayerHand(foldedFlop, 4).sawFlop).toBe(true);
+    expect(summarizePlayerHand(foldedFlop, 4).heroReachedShowdown).toBe(false);
+
+    let p = updateHeroProfile(emptyHeroProfile(), summary);
+    p = updateHeroProfile(p, summarizePlayerHand(foldedFlop, 4));
+    p = updateHeroProfile(p, summarizePlayerHand(play([['raise', 6], ...foldRest(5)], 4), 4));
+    expect(p.counters.flopsSeen).toBe(2);
+    expect(p.counters.flopShowdowns).toBe(1);
+    expect(p.counters.threeBetChances).toBe(3);
+    expect(p.counters.threeBets).toBe(0);
+    expect(p.wentToShowdown).toBeCloseTo((1 + SHOWDOWN_PRIOR * 10) / 12, 5);
+    expect(p.threeBet).toBeLessThan(THREE_BET_PRIOR);
   });
 });
