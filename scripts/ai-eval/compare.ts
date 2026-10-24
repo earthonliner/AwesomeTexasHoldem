@@ -11,7 +11,8 @@
  *
  * Negative differences mean the new version wins more from the bot. Style
  * runs (`styles.ts`) compare per style, each side a comma-separated list of
- * the runs' files:
+ * the runs' files, paired in order (so runs on the same seeds, such as one
+ * lineup in both seat orders, pool):
  *
  *   npx tsx scripts/ai-eval/compare.ts base-a.json,base-b.json new-a.json,new-b.json
  */
@@ -39,7 +40,11 @@ const fmt = ({ mean, se }: { mean: number; se: number }, sign = false) =>
 const baseRuns = load(baseArg);
 const newRuns = load(newArg);
 if (Array.isArray(baseRuns[0])) {
-  compareStyles(baseRuns.flat() as StyleEntry[], newRuns.flat() as StyleEntry[]);
+  if (baseRuns.length !== newRuns.length) {
+    console.error('Both sides must list the same number of style runs.');
+    process.exit(1);
+  }
+  compareStyles(baseRuns as StyleEntry[][], newRuns as StyleEntry[][]);
 } else {
   compareDuplicate(baseRuns[0] as Run, newRuns[0] as Run);
 }
@@ -64,27 +69,30 @@ function compareDuplicate(base: Run, next: Run): void {
 }
 
 /** Per style: bb/100 of both versions and their paired difference over the deals. */
-function compareStyles(base: StyleEntry[], next: StyleEntry[]): void {
+function compareStyles(baseRuns: StyleEntry[][], nextRuns: StyleEntry[][]): void {
   const key = (e: StyleEntry) => `${e.seed}:${e.index}`;
-  const nextByKey = new Map(next.map((e) => [key(e), e]));
-  const styles = [...new Set(base.map((e) => e.style))];
+  const styles = [...new Set(baseRuns.flat().map((e) => e.style))];
   for (const style of styles) {
     const baseSamples: number[] = [];
     const nextSamples: number[] = [];
-    for (const seed of new Set(base.map((e) => e.seed))) {
-      const group = base.filter((e) => e.seed === seed && e.style === style);
-      const pairs = group.map((e) => nextByKey.get(key(e)));
-      if (group.length === 0 || pairs.some((e) => !e || e.style !== style)) {
-        console.error(`Seed ${seed} does not match between the two runs.`);
-        process.exit(1);
+    baseRuns.forEach((base, run) => {
+      const nextByKey = new Map(nextRuns[run].map((e) => [key(e), e]));
+      for (const seed of new Set(base.map((e) => e.seed))) {
+        const group = base.filter((e) => e.seed === seed && e.style === style);
+        if (group.length === 0) continue;
+        const pairs = group.map((e) => nextByKey.get(key(e)));
+        if (pairs.some((e) => !e || e.style !== style)) {
+          console.error(`Seed ${seed} of run ${run + 1} does not match between the two sides.`);
+          process.exit(1);
+        }
+        const deals = group[0].perDeal.length;
+        const handsPerDeal = group.reduce((s, e) => s + e.tally.hands, 0) / deals;
+        for (let d = 0; d < deals; d++) {
+          baseSamples.push(group.reduce((s, e) => s + e.perDeal[d], 0) / handsPerDeal / BB_CHIPS);
+          nextSamples.push(pairs.reduce((s, e) => s + e!.perDeal[d], 0) / handsPerDeal / BB_CHIPS);
+        }
       }
-      const deals = group[0].perDeal.length;
-      const handsPerDeal = group.reduce((s, e) => s + e.tally.hands, 0) / deals;
-      for (let d = 0; d < deals; d++) {
-        baseSamples.push(group.reduce((s, e) => s + e.perDeal[d], 0) / handsPerDeal / BB_CHIPS);
-        nextSamples.push(pairs.reduce((s, e) => s + e!.perDeal[d], 0) / handsPerDeal / BB_CHIPS);
-      }
-    }
+    });
     const diffs = nextSamples.map((x, i) => x - baseSamples[i]);
     console.log(
       `${style.padEnd(9)} base ${fmt(summary(baseSamples)).padStart(12)}, new ${fmt(summary(nextSamples)).padStart(12)}, ` +
