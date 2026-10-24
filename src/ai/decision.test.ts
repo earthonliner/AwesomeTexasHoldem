@@ -1352,10 +1352,12 @@ describe('hard exploits the observed human style', () => {
     const polar = read(shownDown(20, 4, 10, 4));
     expect(polar.bluffReadBig).toBeGreaterThan(1.2);
     expect(polar.bluffReadSmall).toBeLessThan(0.8);
-    // The population rate is a river rate: earlier bets start neutral.
+    // Earlier streets start from the population too.
     const turn = (p: HeroProfile) => computeExploit('hard', { ...spot, street: 'turn' }, p);
-    expect(turn(shownDown(0, 0)).bluffReadAll).toBeCloseTo(1, 5);
-    expect(turn(shownDown(20, 0)).bluffReadAll).toBeLessThan(0.8);
+    expect(turn(shownDown(0, 0)).bluffReadAll).toBeCloseTo(unread, 5);
+    // The reads for a size the player opens far more often start neutral.
+    expect(read(shownDown(0, 0)).neutralBluffRead.big).toBeCloseTo(1, 5);
+    expect(read(shownDown(20, 0)).neutralBluffRead.big).toBeLessThan(0.8);
   });
 
   it('pays off a river bettor that shows air less than one that shows it often', () => {
@@ -1363,6 +1365,22 @@ describe('hard exploits the observed human style', () => {
     const honest = foldRate('Qh 9d', river, 0.75, shownDown(20, 0));
     const bluffer = foldRate('Qh 9d', river, 0.75, shownDown(20, 6));
     expect(honest).toBeGreaterThan(bluffer + 0.25);
+  });
+
+  it('reads an overbet habit from neutral until its overbets are shown', () => {
+    const turn = parseCards('Ks 7c 2d 4h');
+    // An unread player overbets like the population: mostly for value.
+    const unread = foldRate('6h 6d', turn, 1.2, shownDown(0, 0));
+    expect(unread).toBeGreaterThan(foldRate('6h 6d', turn, 1.2) + 0.15);
+    // A habitual overbettor is not the population, until it shows value overbets.
+    const habit = foldRate('6h 6d', turn, 1.2, bettor('bigBets'));
+    expect(habit).toBeLessThan(unread - 0.4);
+    const p = bettor('bigBets');
+    const shownValue: HeroProfile = {
+      ...p,
+      counters: { ...p.counters, ...shownDown(20, 0, 20, 0).counters, betOpportunities: 150, bigBets: 135 },
+    };
+    expect(foldRate('6h 6d', turn, 1.2, shownValue)).toBeGreaterThan(habit + 0.4);
   });
 });
 

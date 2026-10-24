@@ -274,6 +274,9 @@ export interface Exploit {
   bluffReadAll: number;
   bluffReadBig: number;
   bluffReadSmall: number;
+  /** The big/small reads shrunk toward the model's neutral point instead of the
+   * population's honesty, for a size the hero opens far more often than the population. */
+  neutralBluffRead: { big: number; small: number };
   /** >1 means the observed player's pre-flop range is wider than baseline. */
   rangeMult: number;
   /** Estimated propensity to release marginal hands under pressure. */
@@ -322,6 +325,7 @@ export function computeExploit(
     bluffReadAll: 1,
     bluffReadBig: 1,
     bluffReadSmall: 1,
+    neutralBluffRead: { big: 1, small: 1 },
     rangeMult: 1,
     foldPressure: 1,
     betWidth: { small: 1, medium: 1, big: 1 },
@@ -383,21 +387,25 @@ export function computeExploit(
   // bluff rate (successful bluffs are never shown, big and small bets get
   // called at different rates), so the read is capped and only partly trusted.
   // The bluff share the equity model gives a bettor (`estimateBluffShare`)
-  // shows air on about 13% of called river bets, the population on 8%, so on
-  // the river an unread player starts below 1 and only one who shows more air
-  // than the model is called down wider. The population rate was measured on
-  // river bets alone: on earlier streets the read starts neutral and moves
-  // with the air the player shows. Each size starts from the player's own rate.
+  // shows air on about 13% of called river bets, the population on 8%, so an
+  // unread player starts below 1 and only one who shows more air than the
+  // model is called down wider. Each size starts from the player's own rate.
   const readScale = (rate: number) => clamp(rate / SHOWN_WEAK_NORM, 0.5, 1.5);
   const readWeight = weight * SHOWN_WEAK_TRUST;
-  const readPrior = ctx.street === 'river' ? SHOWN_WEAK_PRIOR : SHOWN_WEAK_NORM;
-  const readRate = shownWeakRate(c.riverBetsWeak, c.riverBetsShown, readPrior);
-  base.bluffReadAll = blend(readScale(readRate), readWeight);
-  base.bluffReadBig = blend(readScale(shownWeakRate(c.riverBigWeak, c.riverBigShown, readRate)), readWeight);
-  base.bluffReadSmall = blend(
-    readScale(shownWeakRate(c.riverSmallWeak, c.riverSmallShown, readRate)),
-    readWeight,
-  );
+  const reads = (prior: number) => {
+    const rate = shownWeakRate(c.riverBetsWeak, c.riverBetsShown, prior);
+    return {
+      all: blend(readScale(rate), readWeight),
+      big: blend(readScale(shownWeakRate(c.riverBigWeak, c.riverBigShown, rate)), readWeight),
+      small: blend(readScale(shownWeakRate(c.riverSmallWeak, c.riverSmallShown, rate)), readWeight),
+    };
+  };
+  const population = reads(SHOWN_WEAK_PRIOR);
+  const neutral = reads(SHOWN_WEAK_NORM);
+  base.bluffReadAll = population.all;
+  base.bluffReadBig = population.big;
+  base.bluffReadSmall = population.small;
+  base.neutralBluffRead = { big: neutral.big, small: neutral.small };
 
   // Opening-bet frequency per size needs no showdown, so it is free of the
   // called-hands bias above. Against the population norm per chance to open,
@@ -597,6 +605,12 @@ const RAISE_FOLD_NORM = 0.4;
 const SHOWN_WEAK_NORM = 0.13;
 const SHOWN_WEAK_PSEUDO = 6;
 const SHOWN_WEAK_TRUST = 0.7;
+/**
+ * Opening-bet width (`betWidth`) up to which a size counts as the population's
+ * for the bluff read, and the width from which its read starts fully neutral.
+ */
+const HABIT_WIDTH_FROM = 1.2;
+const HABIT_WIDTH_FULL = 1.6;
 /** Share of raised post-flop bets the hard-AI population re-raises (6-max, 100bb). */
 const RAISE_RERAISE_NORM = 0.09;
 
@@ -1372,9 +1386,14 @@ function decidePostflop(
   });
   if (ctx.facingCheckRaise) bluffShare *= 0.62;
   if (facingBet && ctx.aggressorIsHero) {
-    bluffShare *= isBigRiverBet(ctx.betToPot ?? 0)
-      ? exploit.bluffReadBig
-      : exploit.bluffReadSmall;
+    // The population's honesty describes players who bet like the population.
+    // A size the hero opens far more often is read from neutral instead, and
+    // the width read carries its extra bluffs.
+    const big = isBigRiverBet(ctx.betToPot ?? 0);
+    const population = big ? exploit.bluffReadBig : exploit.bluffReadSmall;
+    const neutral = big ? exploit.neutralBluffRead.big : exploit.neutralBluffRead.small;
+    const habit = clamp((readBetWidth - HABIT_WIDTH_FROM) / (HABIT_WIDTH_FULL - HABIT_WIDTH_FROM), 0, 1);
+    bluffShare *= population + (neutral - population) * habit;
   }
   if (heroBetSize === 'big' && heroBetWidth > 1) bluffShare *= Math.sqrt(heroBetWidth);
   bluffShare = clamp(bluffShare, 0.03, heroBetWidth > 1.3 ? 0.6 : 0.5);
