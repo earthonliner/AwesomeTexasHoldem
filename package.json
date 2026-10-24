@@ -16,6 +16,7 @@
     "typecheck:server": "tsc -p tsconfig.server.json",
     "eval:ai": "tsx scripts/ai-eval/duplicate.ts",
     "eval:pop": "tsx scripts/ai-eval/population.ts",
+    "eval:styles": "tsx scripts/ai-eval/styles.ts",
     "server": "tsx server/index.ts",
     "lan": "npm run build && npm run server",
     "cap:add:ios": "npm run build && npx cap add ios",
