@@ -2331,4 +2331,34 @@ describe('live cash styles (hard)', () => {
     };
     expect(rate(loose, river, 3300)).toBeGreaterThan(rate(tight, river, 3300) + 0.1);
   });
+
+  // Share of all 1326 starting hands the player continues with (call or raise).
+  const continueShare = (p: Personality, c: DecisionContext, heroProfile?: HeroProfile) => {
+    const deck = makeDeck();
+    let continues = 0;
+    let combos = 0;
+    for (let i = 0; i < deck.length; i++) {
+      for (let j = i + 1; j < deck.length; j++) {
+        const d = decide({
+          personality: p,
+          difficulty: 'hard',
+          ctx: { ...c, hole: [deck[i], deck[j]] },
+          rng: seeded(i * 52 + j),
+          heroProfile,
+        });
+        combos++;
+        if (d.action !== 'fold') continues++;
+      }
+    }
+    return continues / combos;
+  };
+
+  it('flats its extra loose hands in position, not from the small blind', () => {
+    // Cutoff open to 2.5bb; the button or, after it folds, the small blind.
+    const button = spot(['fold'], ['fold'], ['raise', 5]);
+    const smallBlind = spot(['fold'], ['fold'], ['raise', 5], ['fold']);
+    const widening = (c: DecisionContext) => continueShare(loose, c) / continueShare(tight, c);
+    expect(widening(button)).toBeGreaterThan(1.35);
+    expect(widening(smallBlind)).toBeLessThan(1.25);
+  });
 });

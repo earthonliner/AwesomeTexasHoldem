@@ -822,7 +822,7 @@ function decidePreflop(
     const openerRange = openerRangeFor(ctx, ctx.aggressorPosition);
     let defendRange = callerRangeFor(position, inPosition, openerRange);
     defendRange *= Math.exp(-0.2 * Math.max(0, wagerBB - 2.5));
-    defendRange *= style;
+    defendRange *= 1 + (style - 1) * defendStyleWeight(position, inPosition);
     defendRange *= ctx.aggressorIsHero ? Math.sqrt(exploit.rangeMult) : 1;
     defendRange += Math.min(0.08, callers * 0.035);
     // A small blind that completed and is raised by the big blind is getting
@@ -891,7 +891,10 @@ function decidePreflop(
       shallowPressure * 0.24 * p.stackReactivity +
       deepRealisation * 0.2 * p.stackReactivity;
     const continueRange = clamp(
-      (inPosition ? 0.13 : 0.105) * sizePenalty * style * depthFactor +
+      (inPosition ? 0.13 : 0.105) *
+        sizePenalty *
+        (1 + (style - 1) * THREE_BET_CONTINUE_STYLE_WEIGHT) *
+        depthFactor +
         (playableDeep ? deepRealisation * 0.025 * p.stackReactivity : 0),
       0.055,
       0.22,
@@ -1070,6 +1073,22 @@ const OPEN_STYLE_WEIGHT: Record<TablePosition, number> = {
   sb: 1,
   bb: 1,
 };
+
+/**
+ * How much of a loose (or tight) style reaches its calls of a single raise.
+ * The extra hands a loose style flats are the ones the raiser's range
+ * dominates: they keep most of their value in position, half of it in the big
+ * blind (a discounted price, but out of position for the whole hand) and a
+ * quarter out of position, where a flat from the small blind lands.
+ */
+function defendStyleWeight(position: TablePosition, inPosition: boolean): number {
+  if (position === 'bb') return 0.5;
+  if (position === 'sb' || !inPosition) return 0.25;
+  return 0.75;
+}
+
+/** How much of a loose (or tight) style reaches the hands it continues with against a 3-bet. */
+const THREE_BET_CONTINUE_STYLE_WEIGHT = 0.35;
 
 /** Hands below its raising range a folded-to small blind completes (style 1). */
 const SB_COMPLETE_BAND = 0.16;
