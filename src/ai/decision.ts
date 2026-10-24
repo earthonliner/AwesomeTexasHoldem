@@ -42,9 +42,13 @@ import {
 import { analyseHand, type HandFeatures } from './handFeatures';
 import {
   betSizeClass,
+  FOLD_TO_THREE_BET_PRIOR,
   isBigRiverBet,
   RIVER_FOLD_PRIOR,
+  SHOWDOWN_PRIOR,
+  SHOWN_WEAK_PRIOR,
   streetCounterKey,
+  THREE_BET_PRIOR,
   type BetSizeClass,
 } from './profile';
 
@@ -270,6 +274,9 @@ export interface Exploit {
   bluffReadAll: number;
   bluffReadBig: number;
   bluffReadSmall: number;
+  /** The big/small reads shrunk toward the model's neutral point instead of the
+   * population's honesty, for a size the hero opens far more often than the population. */
+  neutralBluffRead: { big: number; small: number };
   /** >1 means the observed player's pre-flop range is wider than baseline. */
   rangeMult: number;
   /** Estimated propensity to release marginal hands under pressure. */
@@ -290,6 +297,10 @@ export interface Exploit {
   reraise: number;
   /** Fold-equity multiplier for opening bets into the hero on the river. */
   riverFold: number;
+  /** Width of the hero's pre-flop 3-betting range against the population's (1 = norm). */
+  threeBetWidth: number;
+  /** Fold-equity multiplier for re-raising the hero's pre-flop raise. */
+  threeBetFold: number;
 }
 
 /** Blend an exploit multiplier toward neutral (1) by sample confidence. */
@@ -314,6 +325,7 @@ export function computeExploit(
     bluffReadAll: 1,
     bluffReadBig: 1,
     bluffReadSmall: 1,
+    neutralBluffRead: { big: 1, small: 1 },
     rangeMult: 1,
     foldPressure: 1,
     betWidth: { small: 1, medium: 1, big: 1 },
@@ -324,6 +336,8 @@ export function computeExploit(
     lightRaise: 0,
     reraise: RAISE_RERAISE_NORM,
     riverFold: 1,
+    threeBetWidth: 1,
+    threeBetFold: 1,
   };
   if (difficulty !== 'hard' || !profile) return base;
   const c = profile.counters;
@@ -337,15 +351,20 @@ export function computeExploit(
     base.stealBonus = (profile.foldToSteal - 0.6) * 0.6 * stealWeight;
   }
   if (profile.foldToSteal > 0.55) base.bluffMult *= blend(1.3, stealWeight);
-  if (profile.wentToShowdown > 0.45) base.bluffMult *= blend(0.6, weight); // sticky -> bluff less
+  // A player who takes almost half the flops it sees to showdown is a station.
+  const flopWeight = weight * confidence(c.flopsSeen ?? 0, 25);
+  if ((profile.wentToShowdown ?? SHOWDOWN_PRIOR) > 0.45) base.bluffMult *= blend(0.6, flopWeight);
+  // Shown air per called river bet, shrunk toward the population rate.
+  const shownWeakRate = (weak: number, shown: number, prior: number) =>
+    (weak + prior * SHOWN_WEAK_PSEUDO) / (shown + SHOWN_WEAK_PSEUDO);
+  const weakRate = shownWeakRate(c.riverBetsWeak, c.riverBetsShown, SHOWN_WEAK_PRIOR);
   if (profile.aggression > 0.6) {
     // Aggression is graded, and it is not by itself evidence of bluffing (it
     // can be value raises or a run of strong hands). Calling down lighter needs
     // corroboration from shown-weak river bets; otherwise the lean stays small.
     const excess = clamp((profile.aggression - 0.6) / 0.25, 0, 1);
     base.bluffMult *= blend(1 - 0.2 * excess, actionWeight);
-    const shownWeakEvidence =
-      c.riverBetsShown >= 3 ? clamp(profile.bluffCaught / 0.3, 0.4, 1.3) : 0.7;
+    const shownWeakEvidence = clamp(weakRate / SHOWN_WEAK_NORM, 0.4, 1.3);
     base.valueLean += 0.05 * actionWeight * excess * shownWeakEvidence;
     base.trapMore = actionWeight > 0.3 && excess >= 0.3;
   }
@@ -367,19 +386,26 @@ export function computeExploit(
   // bluffs from showdown evidence. The evidence is a *shown-weak* rate, not a
   // bluff rate (successful bluffs are never shown, big and small bets get
   // called at different rates), so the read is capped and only partly trusted.
-  const SHOWN_WEAK_TRUST = 0.7;
-  const readScale = (weak: number, shown: number): number =>
-    shown >= 4 ? clamp(weak / shown / 0.33, 0.5, 1.5) : NaN;
-  const all = readScale(c.riverBetsWeak, c.riverBetsShown);
-  if (!Number.isNaN(all)) base.bluffReadAll = blend(all, weight * SHOWN_WEAK_TRUST);
-  const big = readScale(c.riverBigWeak, c.riverBigShown);
-  base.bluffReadBig = Number.isNaN(big)
-    ? base.bluffReadAll
-    : blend(big, weight * SHOWN_WEAK_TRUST);
-  const small = readScale(c.riverSmallWeak, c.riverSmallShown);
-  base.bluffReadSmall = Number.isNaN(small)
-    ? base.bluffReadAll
-    : blend(small, weight * SHOWN_WEAK_TRUST);
+  // The bluff share the equity model gives a bettor (`estimateBluffShare`)
+  // shows air on about 13% of called river bets, the population on 8%, so an
+  // unread player starts below 1 and only one who shows more air than the
+  // model is called down wider. Each size starts from the player's own rate.
+  const readScale = (rate: number) => clamp(rate / SHOWN_WEAK_NORM, 0.5, 1.5);
+  const readWeight = weight * SHOWN_WEAK_TRUST;
+  const reads = (prior: number) => {
+    const rate = shownWeakRate(c.riverBetsWeak, c.riverBetsShown, prior);
+    return {
+      all: blend(readScale(rate), readWeight),
+      big: blend(readScale(shownWeakRate(c.riverBigWeak, c.riverBigShown, rate)), readWeight),
+      small: blend(readScale(shownWeakRate(c.riverSmallWeak, c.riverSmallShown, rate)), readWeight),
+    };
+  };
+  const population = reads(SHOWN_WEAK_PRIOR);
+  const neutral = reads(SHOWN_WEAK_NORM);
+  base.bluffReadAll = population.all;
+  base.bluffReadBig = population.big;
+  base.bluffReadSmall = population.small;
+  base.neutralBluffRead = { big: neutral.big, small: neutral.small };
 
   // Opening-bet frequency per size needs no showdown, so it is free of the
   // called-hands bias above. Against the population norm per chance to open,
@@ -511,6 +537,20 @@ export function computeExploit(
   const riverWeight = weight * confidence(c.riverBetsFaced, 12);
   base.riverFold = base.foldPressure + (riverRead - base.foldPressure) * riverWeight;
 
+  // Pre-flop re-raises: how wide the hero 3-bets against the population, and
+  // how often it gives up its own raise to one. Until its opens have been
+  // re-raised, the general fold read stands in.
+  const threeBetRate = profile.threeBet ?? THREE_BET_PRIOR;
+  base.threeBetWidth = blend(
+    clamp(threeBetRate / THREE_BET_PRIOR, 0.4, 2.5),
+    weight * confidence(c.threeBetChances ?? 0, 25),
+  );
+  const foldToThreeBet = profile.foldToThreeBet ?? FOLD_TO_THREE_BET_PRIOR;
+  const threeBetFoldRead = clamp(foldToThreeBet / FOLD_TO_THREE_BET_PRIOR, 0.5, 1.6);
+  base.threeBetFold =
+    base.foldPressure +
+    (threeBetFoldRead - base.foldPressure) * weight * confidence(c.threeBetsFaced ?? 0, 10);
+
   return base;
 }
 
@@ -557,6 +597,20 @@ function postflopStreet(street: DecisionContext['street']): PostflopStreet | nul
 }
 /** Fold rate to a raise that the base raise fold equity (`estimateFoldEquity`) assumes. */
 const RAISE_FOLD_NORM = 0.4;
+/**
+ * Air shown per called river bet at which the base bluff share is right (the
+ * bluff-read neutral point), the pseudo-showdowns a read is shrunk by, and the
+ * share of the read trusted at full sample (see `computeExploit`).
+ */
+const SHOWN_WEAK_NORM = 0.13;
+const SHOWN_WEAK_PSEUDO = 6;
+const SHOWN_WEAK_TRUST = 0.7;
+/**
+ * Opening-bet width (`betWidth`) up to which a size counts as the population's
+ * for the bluff read, and the width from which its read starts fully neutral.
+ */
+const HABIT_WIDTH_FROM = 1.2;
+const HABIT_WIDTH_FULL = 1.6;
 /** Share of raised post-flop bets the hard-AI population re-raises (6-max, 100bb). */
 const RAISE_RERAISE_NORM = 0.09;
 
@@ -822,7 +876,7 @@ function decidePreflop(
     const openerRange = openerRangeFor(ctx, ctx.aggressorPosition);
     let defendRange = callerRangeFor(position, inPosition, openerRange);
     defendRange *= Math.exp(-0.2 * Math.max(0, wagerBB - 2.5));
-    defendRange *= style;
+    defendRange *= 1 + (style - 1) * defendStyleWeight(position, inPosition);
     defendRange *= ctx.aggressorIsHero ? Math.sqrt(exploit.rangeMult) : 1;
     defendRange += Math.min(0.08, callers * 0.035);
     // A small blind that completed and is raised by the big blind is getting
@@ -853,7 +907,10 @@ function decidePreflop(
     const bluff3 =
       isThreeBetBluff(ctx) &&
       strength >= 1 - Math.min(defendRange, 0.2) &&
-      rng() < p.bluff * (inPosition ? 0.55 : 0.38) * exploit.foldPressure;
+      rng() <
+        p.bluff *
+          (inPosition ? 0.55 : 0.38) *
+          (ctx.aggressorIsHero ? exploit.threeBetFold : exploit.foldPressure);
     if (mayRaise && (value3 || bluff3)) {
       const xBase = inPosition ? 2.9 : 3.65;
       const { amount, allIn } = sizeRaise(
@@ -890,16 +947,24 @@ function decidePreflop(
       1 -
       shallowPressure * 0.24 * p.stackReactivity +
       deepRealisation * 0.2 * p.stackReactivity;
+    // The hero's 3-bet width: a wide 3-bettor is played back at wider, and an
+    // honest one is given up to below the usual floor.
+    const read3 = ctx.aggressorIsHero ? exploit.threeBetWidth : 1;
     const continueRange = clamp(
-      (inPosition ? 0.13 : 0.105) * sizePenalty * style * depthFactor +
+      (inPosition ? 0.13 : 0.105) *
+        sizePenalty *
+        (1 + (style - 1) * THREE_BET_CONTINUE_STYLE_WEIGHT) *
+        depthFactor *
+        Math.pow(read3, 0.75) +
         (playableDeep ? deepRealisation * 0.025 * p.stackReactivity : 0),
-      0.055,
+      read3 < 1 ? 0.04 : 0.055,
       0.22,
     );
     const bluff4Chance =
       p.bluff *
       (0.3 + shallowPressure * 0.38 - deepRealisation * 0.14) *
-      exploit.foldPressure;
+      exploit.foldPressure *
+      clamp(read3, 0.5, 1.6);
     const bluff4 =
       mayRaise &&
       isFourBetBluff(ctx) &&
@@ -923,11 +988,7 @@ function decidePreflop(
         );
         const jamRisk = Math.max(0, target - ctx.streetCommitted);
         const callerContribution = Math.max(0, target - currentLevel);
-        const threeBetRange = clamp(
-          (inPosition ? 0.075 : 0.095) * (ctx.aggressorIsHero ? exploit.rangeMult : 1),
-          0.04,
-          0.16,
-        );
+        const threeBetRange = clamp((inPosition ? 0.075 : 0.095) * read3, 0.04, 0.16);
         const continueShare = clamp(
           jamContinueFraction(jamRisk, potBefore) / exploit.foldPressure,
           0.2,
@@ -1070,6 +1131,22 @@ const OPEN_STYLE_WEIGHT: Record<TablePosition, number> = {
   sb: 1,
   bb: 1,
 };
+
+/**
+ * How much of a loose (or tight) style reaches its calls of a single raise.
+ * The extra hands a loose style flats are the ones the raiser's range
+ * dominates: they keep most of their value in position, half of it in the big
+ * blind (a discounted price, but out of position for the whole hand) and a
+ * quarter out of position, where a flat from the small blind lands.
+ */
+function defendStyleWeight(position: TablePosition, inPosition: boolean): number {
+  if (position === 'bb') return 0.5;
+  if (position === 'sb' || !inPosition) return 0.25;
+  return 0.75;
+}
+
+/** How much of a loose (or tight) style reaches the hands it continues with against a 3-bet. */
+const THREE_BET_CONTINUE_STYLE_WEIGHT = 0.35;
 
 /** Hands below its raising range a folded-to small blind completes (style 1). */
 const SB_COMPLETE_BAND = 0.16;
@@ -1309,9 +1386,14 @@ function decidePostflop(
   });
   if (ctx.facingCheckRaise) bluffShare *= 0.62;
   if (facingBet && ctx.aggressorIsHero) {
-    bluffShare *= isBigRiverBet(ctx.betToPot ?? 0)
-      ? exploit.bluffReadBig
-      : exploit.bluffReadSmall;
+    // The population's honesty describes players who bet like the population.
+    // A size the hero opens far more often is read from neutral instead, and
+    // the width read carries its extra bluffs.
+    const big = isBigRiverBet(ctx.betToPot ?? 0);
+    const population = big ? exploit.bluffReadBig : exploit.bluffReadSmall;
+    const neutral = big ? exploit.neutralBluffRead.big : exploit.neutralBluffRead.small;
+    const habit = clamp((readBetWidth - HABIT_WIDTH_FROM) / (HABIT_WIDTH_FULL - HABIT_WIDTH_FROM), 0, 1);
+    bluffShare *= population + (neutral - population) * habit;
   }
   if (heroBetSize === 'big' && heroBetWidth > 1) bluffShare *= Math.sqrt(heroBetWidth);
   bluffShare = clamp(bluffShare, 0.03, heroBetWidth > 1.3 ? 0.6 : 0.5);

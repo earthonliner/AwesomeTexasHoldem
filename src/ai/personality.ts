@@ -104,7 +104,14 @@ export function generatePersonality(difficulty: Difficulty, rng: Rng = defaultRn
   // table very loose (opens and barrels a lot, like the live LAG who keeps a
   // game moving).
   const roll = rng();
-  const style = roll < 0.35 ? HARD_STYLES.tag : roll < 0.75 ? HARD_STYLES.lag : HARD_STYLES.looseLag;
+  return hardStylePersonality(roll < 0.35 ? 'tag' : roll < 0.75 ? 'lag' : 'looseLag', rng);
+}
+
+export type HardStyle = keyof typeof HARD_STYLES;
+
+/** A hard personality of the given style, its fields drawn around the style means. */
+export function hardStylePersonality(name: HardStyle, rng: Rng = defaultRng): Personality {
+  const style = HARD_STYLES[name];
   return {
     vpip: around(rng, style.vpip, style.vpipSpread),
     pfr: around(rng, style.pfr, 0.055),
@@ -115,6 +122,14 @@ export function generatePersonality(difficulty: Difficulty, rng: Rng = defaultRn
     stackReactivity: around(rng, 0.86, 0.07),
     potReactivity: around(rng, 0.84, 0.07),
   };
+}
+
+/** The hard style a personality was drawn from (their vpip bands do not overlap). */
+export function hardStyleOf(p: Personality): HardStyle {
+  const { tag, lag } = HARD_STYLES;
+  if (p.vpip <= tag.vpip + tag.vpipSpread + 0.0025) return 'tag';
+  if (p.vpip <= lag.vpip + lag.vpipSpread + 0.0025) return 'lag';
+  return 'looseLag';
 }
 
 const ARCHETYPE_LABELS: Array<{ test: (p: Personality) => boolean; label: string }> = [
