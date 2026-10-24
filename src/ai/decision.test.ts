@@ -3,7 +3,7 @@ import { buildDecisionContext } from './context';
 import { actionEV, computeExploit, decide } from './decision';
 import { describePersonality, generatePersonality } from './personality';
 import { dynamicBluffFrequency } from './dynamicBluff';
-import { emptyHeroProfile, RIVER_FOLD_PRIOR } from './profile';
+import { emptyHeroProfile, RIVER_FOLD_PRIOR, THREE_BET_PRIOR } from './profile';
 import type { AIDecision, DecisionContext, HeroProfile, Personality } from './types';
 import { parseCards, makeDeck, shuffle } from '../engine/deck';
 import { applyAction, startHand, type SeatInit } from '../engine/game';
@@ -1322,6 +1322,48 @@ describe('hard exploits the observed human style', () => {
     // Middle pair beats the stabs it would raise off: it calls them.
     expect(responses('7h 6h', flop, 0.3, raisedBettor(32)).raise).toBeLessThan(0.06);
   });
+
+  // `shown` of the player's river bets were called and shown down, `weak` of
+  // them with air; `big`/`bigWeak` of those were big bets.
+  const shownDown = (shown: number, weak: number, big = 0, bigWeak = 0): HeroProfile => ({
+    ...emptyHeroProfile(),
+    hands: 120,
+    counters: {
+      ...emptyHeroProfile().counters,
+      handsDealt: 120,
+      riverBetsShown: shown,
+      riverBetsWeak: weak,
+      riverBigShown: big,
+      riverBigWeak: bigWeak,
+      riverSmallShown: shown - big,
+      riverSmallWeak: weak - bigWeak,
+    },
+  });
+
+  it('reads the bluffs in the human bets from the air it shows, starting below the model', () => {
+    const spot = ctx({ hole: parseCards('Qh Jd') as [Card, Card], street: 'river' });
+    const read = (p: HeroProfile) => computeExploit('hard', spot, p);
+    const unread = read(shownDown(0, 0)).bluffReadAll;
+    expect(unread).toBeGreaterThan(0.65);
+    expect(unread).toBeLessThan(0.8);
+    expect(read(shownDown(20, 0)).bluffReadAll).toBeLessThan(unread);
+    expect(read(shownDown(20, 6)).bluffReadAll).toBeGreaterThan(1.2);
+    // Bluffing only with its big bets is read by size.
+    const polar = read(shownDown(20, 4, 10, 4));
+    expect(polar.bluffReadBig).toBeGreaterThan(1.2);
+    expect(polar.bluffReadSmall).toBeLessThan(0.8);
+    // The population rate is a river rate: earlier bets start neutral.
+    const turn = (p: HeroProfile) => computeExploit('hard', { ...spot, street: 'turn' }, p);
+    expect(turn(shownDown(0, 0)).bluffReadAll).toBeCloseTo(1, 5);
+    expect(turn(shownDown(20, 0)).bluffReadAll).toBeLessThan(0.8);
+  });
+
+  it('pays off a river bettor that shows air less than one that shows it often', () => {
+    const river = parseCards('Ks 9c 4d 2h 7s');
+    const honest = foldRate('Qh 9d', river, 0.75, shownDown(20, 0));
+    const bluffer = foldRate('Qh 9d', river, 0.75, shownDown(20, 6));
+    expect(honest).toBeGreaterThan(bluffer + 0.25);
+  });
 });
 
 describe('medium AI bluffs in a controlled, hard-to-read way', () => {
@@ -2360,5 +2402,24 @@ describe('live cash styles (hard)', () => {
     const widening = (c: DecisionContext) => continueShare(loose, c) / continueShare(tight, c);
     expect(widening(button)).toBeGreaterThan(1.35);
     expect(widening(smallBlind)).toBeLessThan(1.25);
+  });
+
+  it('plays back at a wide 3-bettor and gives up to an honest one', () => {
+    // Cutoff opens to 2.5bb and the human on the button 3-bets to 7.5bb.
+    const game = table(6, ['fold'], ['fold'], ['raise', 5], ['raise', 15], ['fold'], ['fold']);
+    const facing = buildDecisionContext(game, game.toAct, { profiledPlayerIds: new Set([5]) });
+    expect(facing.aggressorIsHero).toBe(true);
+    const threeBettor = (made: number): HeroProfile => {
+      const base = emptyHeroProfile();
+      return {
+        ...base,
+        hands: 160,
+        threeBet: (made + THREE_BET_PRIOR * 10) / 70,
+        counters: { ...base.counters, handsDealt: 160, threeBetChances: 60, threeBets: made },
+      };
+    };
+    const unread = continueShare(tight, facing);
+    expect(continueShare(tight, facing, threeBettor(10))).toBeGreaterThan(unread * 1.5);
+    expect(continueShare(tight, facing, threeBettor(1))).toBeLessThan(unread * 0.75);
   });
 });
